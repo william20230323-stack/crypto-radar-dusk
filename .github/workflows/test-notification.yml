@@ -1,0 +1,76 @@
+name: 測試 Telegram 通知
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-telegram:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 測試 Telegram 連線
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          echo "🔍 開始測試 Telegram 通知..."
+          echo "TG_TOKEN 長度: ${#TG_TOKEN}"
+          echo "TG_CHAT_ID: $TG_CHAT_ID"
+          
+          # 測試方法1：使用 curl
+          echo "🔄 測試方法1：使用 curl"
+          curl_status=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_CHAT_ID" \
+            -d text="✅ 測試通知：Telegram 連接成功")
+          
+          echo "Curl 狀態碼: $curl_status"
+          
+          # 測試方法2：使用 Python
+          echo "🔄 測試方法2：使用 Python"
+          python3 -c "
+          import requests, os, json
+          token = os.getenv('TG_TOKEN')
+          chat_id = os.getenv('TG_CHAT_ID')
+          
+          print(f'Token 前10位: {token[:10] if token else \"無\"}...')
+          print(f'Chat ID: {chat_id}')
+          
+          if token and chat_id:
+              # 測試 Bot Token 是否有效
+              print('🔍 測試 Bot Token...')
+              test_url = f'https://api.telegram.org/bot{token}/getMe'
+              try:
+                  r = requests.get(test_url, timeout=10)
+                  print(f'Bot 測試狀態碼: {r.status_code}')
+                  if r.status_code == 200:
+                      print('✅ Bot Token 有效')
+                      bot_info = r.json()
+                      print(f'Bot 名稱: {bot_info[\"result\"][\"first_name\"]}')
+                      print(f'Bot 用戶名: @{bot_info[\"result\"][\"username\"]}')
+                  else:
+                      print(f'❌ Bot Token 無效: {r.text}')
+              except Exception as e:
+                  print(f'❌ 連接錯誤: {e}')
+              
+              # 發送測試訊息
+              print('📤 發送測試訊息...')
+              url = f'https://api.telegram.org/bot{token}/sendMessage'
+              data = {
+                  'chat_id': chat_id,
+                  'text': '🔔 這是一條測試通知\n來自 GitHub Actions\n如果收到請回覆 OK',
+                  'parse_mode': 'HTML'
+              }
+              try:
+                  r = requests.post(url, json=data, timeout=10)
+                  print(f'發送狀態碼: {r.status_code}')
+                  if r.status_code == 200:
+                      print('✅ 測試訊息發送成功！')
+                      print('📱 請檢查 Telegram 是否收到訊息')
+                  else:
+                      print(f'❌ 發送失敗: {r.text}')
+              except Exception as e:
+                  print(f'❌ 發送錯誤: {e}')
+          else:
+              print('❌ 缺少 TG_TOKEN 或 TG_CHAT_ID')
+          "
