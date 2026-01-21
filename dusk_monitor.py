@@ -242,6 +242,8 @@ def send_telegram(message: str) -> bool:
 
 def analyze_latest_kline(api: BinanceUSAPI) -> Optional[Dict]:
     """分析最新的完整K線"""
+    global processed_kline_times  # 宣告使用全域變數
+    
     # 獲取最近5根K線
     klines = api.get_klines(SYMBOL, "1m", 5)
     if not klines:
