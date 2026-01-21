@@ -1,39 +1,220 @@
-name: 幣安監控 - 主系統
+#!/usr/bin/env python3
+"""
+幣安 DUSKUSDT 智能監控系統 - 單次掃描版
+專為 GitHub Actions 優化
+"""
 
-on:
-  schedule:
-    - cron: '*/2 * * * *'
-  workflow_dispatch:
+import os
+import time
+import random
+import requests
+import json
+from datetime import datetime
+from binance.client import Client
 
-jobs:
-  monitor:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
+# ========== 配置參數 ==========
+SYMBOL = "DUSKUSDT"
+TIMEFRAME = "1m"
+ALERT_VOLUME_RATIO = 3.0
+ALERT_ORDER_RATIO = 0.6
+
+# ========== Telegram 通知 ==========
+def send_telegram_alert(alert_type, data):
+    """發送 Telegram 警報"""
+    token = os.getenv('TG_TOKEN')
+    chat_id = os.getenv('TG_CHAT_ID')
     
-    steps:
-      - name: 1. 隨機延遲啟動
-        run: |
-          delay=$((RANDOM % 15 + 10))
-          echo "🕐 隨機延遲 ${delay} 秒"
-          sleep $delay
+    if not token or not chat_id:
+        print("❌ 缺少 Telegram 配置")
+        return False
+    
+    try:
+        if alert_type == "BUY_PRESSURE":
+            message = f"""🚨 <b>大量買盤偵測 - DUSKUSDT</b>
 
-      - name: 2. 檢出代碼
-        uses: actions/checkout@v3
+📉 陰線下跌中出現大量買單
+💰 價格：{data['price']} USDT
+📊 成交量：{data['volume']:.0f} DUSK
+⚡ 買單比例：{data['buy_ratio']:.1%}
+🕒 時間：{data['time']}"""
+            
+        elif alert_type == "SELL_PRESSURE":
+            message = f"""🚨 <b>大量賣盤出逃 - DUSKUSDT</b>
 
-      - name: 3. 設置 Python 環境
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
+📈 陽線上漲中出現大量賣單
+💰 價格：{data['price']} USDT
+📊 成交量：{data['volume']:.0f} DUSK
+⚡ 賣單比例：{data['sell_ratio']:.1%}
+🕒 時間：{data['time']}"""
+        
+        elif alert_type == "SCAN_REPORT":
+            message = f"""📊 <b>DUSKUSDT 掃描報告</b>
 
-      - name: 4. 安裝必要套件
-        run: |
-          pip install python-binance==1.0.19 requests==2.31.0
-          echo "✅ 套件安裝完成"
+💰 當前價格：{data['price']} USDT
+📈 成交量：{data['volume']:.0f} DUSK
+🟢 買單比例：{data['buy_ratio']:.1%}
+🔴 賣單比例：{data['sell_ratio']:.1%}
+🎯 K線狀態：{data['candle']}
+🕒 掃描時間：{data['time']}"""
+        
+        else:
+            message = f"📡 {data.get('message', '系統更新')}"
+        
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        
+        response = requests.post(url, json=payload, timeout=8)
+        return response.status_code == 200
+            
+    except Exception as e:
+        print(f"❌ Telegram 錯誤: {str(e)[:100]}")
+        return False
 
-      - name: 5. 執行智能監控
-        env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          MONITOR_MODE: "main"
-        run: |
-          python binance_smart_monitor.py
+# ========== 市場數據獲取 ==========
+def get_market_data():
+    """獲取市場數據"""
+    try:
+        client = Client()
+        
+        # 獲取K線數據
+        klines = client.get_klines(
+            symbol=SYMBOL,
+            interval=TIMEFRAME,
+            limit=5
+        )
+        
+        if len(klines) < 2:
+            return None
+        
+        latest = klines[-1]
+        previous = klines[-2]
+        
+        # 獲取當前價格
+        ticker = client.get_symbol_ticker(symbol=SYMBOL)
+        
+        # 獲取訂單簿
+        depth = client.get_order_book(symbol=SYMBOL, limit=5)
+        
+        return {
+            'kline': {
+                'open': float(latest[1]),
+                'high': float(latest[2]),
+                'low': float(latest[3]),
+                'close': float(latest[4]),
+                'volume': float(latest[5]),
+                'prev_volume': float(previous[5]),
+                'time': datetime.fromtimestamp(latest[0]/1000).strftime('%H:%M:%S')
+            },
+            'price': float(ticker['price']),
+            'order_book': depth
+        }
+        
+    except Exception as e:
+        print(f"❌ 數據獲取錯誤: {str(e)[:100]}")
+        return None
+
+# ========== 單次掃描主函數 ==========
+def single_scan():
+    """執行單次掃描"""
+    print("=" * 50)
+    print(f"🔍 DUSKUSDT 單次掃描開始")
+    print(f"⏰ 時間: {datetime.now().strftime('%H:%M:%S')}")
+    print("=" * 50)
+    
+    # 獲取數據
+    print("📡 獲取市場數據...")
+    market_data = get_market_data()
+    
+    if not market_data:
+        print("❌ 數據獲取失敗")
+        return False
+    
+    kline = market_data['kline']
+    
+    # 分析數據
+    is_bearish = kline['close'] < kline['open']
+    is_bullish = kline['close'] > kline['open']
+    
+    volume_ratio = kline['volume'] / kline['prev_volume'] if kline['prev_volume'] > 0 else 1
+    
+    # 計算買賣壓力
+    bids = market_data['order_book']['bids'][:3]
+    asks = market_data['order_book']['asks'][:3]
+    
+    buy_pressure = sum(float(bid[1]) for bid in bids)
+    sell_pressure = sum(float(ask[1]) for ask in asks)
+    total_pressure = buy_pressure + sell_pressure
+    
+    buy_ratio = buy_pressure / total_pressure if total_pressure > 0 else 0
+    sell_ratio = sell_pressure / total_pressure if total_pressure > 0 else 0
+    
+    # 打印結果
+    candle_type = "陰線" if is_bearish else "陽線" if is_bullish else "十字線"
+    
+    print(f"💰 當前價格: {market_data['price']} USDT")
+    print(f"📈 成交量比率: {volume_ratio:.1f}倍")
+    print(f"🟢 買單比例: {buy_ratio:.1%}")
+    print(f"🔴 賣單比例: {sell_ratio:.1%}")
+    print(f"🎯 K線狀態: {candle_type}")
+    
+    # 檢查警報條件
+    alert_triggered = False
+    
+    # 條件1: 陰線 + 大量買單
+    if is_bearish and volume_ratio > ALERT_VOLUME_RATIO and buy_ratio > ALERT_ORDER_RATIO:
+        print("🚨 觸發: 陰線大量買盤")
+        alert_triggered = send_telegram_alert("BUY_PRESSURE", {
+            'price': market_data['price'],
+            'volume': kline['volume'],
+            'buy_ratio': buy_ratio,
+            'time': kline['time']
+        })
+    
+    # 條件2: 陽線 + 大量賣單
+    elif is_bullish and volume_ratio > ALERT_VOLUME_RATIO and sell_ratio > ALERT_ORDER_RATIO:
+        print("🚨 觸發: 陽線大量賣盤")
+        alert_triggered = send_telegram_alert("SELL_PRESSURE", {
+            'price': market_data['price'],
+            'volume': kline['volume'],
+            'sell_ratio': sell_ratio,
+            'time': kline['time']
+        })
+    
+    # 如果沒有觸發警報，每5次掃描發送一次狀態報告
+    else:
+        from random import randint
+        if randint(1, 5) == 1:  # 20% 機率發送狀態報告
+            send_telegram_alert("SCAN_REPORT", {
+                'price': market_data['price'],
+                'volume': kline['volume'],
+                'buy_ratio': buy_ratio,
+                'sell_ratio': sell_ratio,
+                'candle': candle_type,
+                'time': kline['time']
+            })
+            print("📊 發送狀態報告")
+        else:
+            print("✅ 掃描完成，無異常信號")
+    
+    print("=" * 50)
+    print(f"✅ 掃描完成")
+    print("=" * 50)
+    
+    return True
+
+# ========== 主程序 ==========
+if __name__ == "__main__":
+    try:
+        success = single_scan()
+        if success:
+            exit(0)
+        else:
+            exit(1)
+    except Exception as e:
+        print(f"❌ 掃描錯誤: {e}")
+        exit(1)
