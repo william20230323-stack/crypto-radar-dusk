@@ -4,6 +4,8 @@ import sys
 import time
 import requests
 from datetime import datetime
+import random
+from typing import Dict, Optional, Tuple
 
 # 從環境變數讀取設定
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -17,7 +19,124 @@ if not TG_TOKEN or not TG_CHAT_ID:
 
 print(f"✅ 開始監控 {SYMBOL} 1分鐘K線...")
 
-def send_telegram(message):
+# 速率限制設定
+REQUEST_DELAY = 1.5  # 每次請求間隔1.5秒
+MAX_RETRIES = 3
+API_TIMEOUT = 10
+
+# 用戶代理輪換列表
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/537.36",
+    "Mozilla/5.0 (Android 10; Mobile) AppleWebKit/537.36"
+]
+
+class RateLimiter:
+    """速率限制器"""
+    def __init__(self, delay: float = 1.0):
+        self.delay = delay
+        self.last_request = 0
+    
+    def wait_if_needed(self):
+        """如果需要則等待"""
+        elapsed = time.time() - self.last_request
+        if elapsed < self.delay:
+            time.sleep(self.delay - elapsed)
+        self.last_request = time.time()
+
+class BinanceUSAPI:
+    """美國合規 Binance API 客戶端"""
+    def __init__(self):
+        self.base_url = "https://api.binance.us/api/v3"
+        self.rate_limiter = RateLimiter(REQUEST_DELAY)
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            "User-Agent": random.choice(USER_AGENTS)
+        })
+    
+    def make_request(self, endpoint: str, params: Dict = None, retry: int = 0) -> Optional[Dict]:
+        """發送API請求"""
+        self.rate_limiter.wait_if_needed()
+        
+        url = f"{self.base_url}/{endpoint}"
+        
+        try:
+            print(f"📡 請求 {endpoint}...")
+            response = self.session.get(url, params=params, timeout=API_TIMEOUT)
+            response.raise_for_status()
+            
+            # 隨機切換User-Agent
+            if random.random() > 0.7:
+                self.session.headers["User-Agent"] = random.choice(USER_AGENTS)
+            
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ API請求失敗: {e}")
+            
+            if retry < MAX_RETRIES:
+                wait_time = 2 ** retry + random.uniform(0.1, 0.5)
+                print(f"⏳ 等待 {wait_time:.1f}秒後重試...")
+                time.sleep(wait_time)
+                return self.make_request(endpoint, params, retry + 1)
+            
+            return None
+    
+    def get_price(self, symbol: str) -> Optional[float]:
+        """獲取當前價格"""
+        data = self.make_request("ticker/price", {"symbol": symbol})
+        
+        if data and "price" in data:
+            price = float(data["price"])
+            print(f"✅ 獲取價格成功: ${price:.5f}")
+            return price
+        
+        return None
+    
+    def get_klines(self, symbol: str, interval: str = "1m", limit: int = 20) -> Optional[list]:
+        """獲取K線數據"""
+        data = self.make_request("klines", {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        })
+        
+        if data and isinstance(data, list):
+            klines = []
+            for k in data:
+                try:
+                    klines.append({
+                        "time": k[0],
+                        "open": float(k[1]),
+                        "high": float(k[2]),
+                        "low": float(k[3]),
+                        "close": float(k[4]),
+                        "volume": float(k[5]),
+                        "quote_volume": float(k[7]),
+                        "trades": k[8],
+                        "taker_buy_volume": float(k[9]),
+                        "taker_buy_quote_volume": float(k[10])
+                    })
+                except (IndexError, ValueError) as e:
+                    print(f"⚠️ 解析K線數據錯誤: {e}")
+                    continue
+            
+            if klines:
+                print(f"✅ 獲取 {len(klines)} 根K線數據成功")
+                return klines
+        
+        return None
+    
+    def get_ticker_24h(self, symbol: str) -> Optional[Dict]:
+        """獲取24小時統計數據"""
+        data = self.make_request("ticker/24hr", {"symbol": symbol})
+        return data
+
+def send_telegram(message: str) -> bool:
     """發送 Telegram 訊息"""
     try:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -26,114 +145,43 @@ def send_telegram(message):
             "text": message,
             "parse_mode": "HTML"
         }
-        response = requests.post(url, json=payload, timeout=10)
+        
+        # 為Telegram請求也添加延遲
+        time.sleep(0.5)
+        response = requests.post(url, json=payload, timeout=API_TIMEOUT)
         return response.status_code == 200
+        
     except Exception as e:
         print(f"❌ Telegram 錯誤: {e}")
         return False
 
-def get_alternative_price():
-    """從多個來源獲取價格，優先使用美國可訪問的API"""
-    price_sources = [
-        # 來源1: CoinGecko API (美國可訪問)
-        {
-            "name": "CoinGecko",
-            "url": "https://api.coingecko.com/api/v3/simple/price",
-            "params": {"ids": "dusk-network", "vs_currencies": "usd"},
-            "parser": lambda data: data["dusk-network"]["usd"]
-        },
-        # 來源2: CoinMarketCap API (需要註冊，但我們使用公開數據)
-        {
-            "name": "CoinMarketCap",
-            "url": "https://api.coincap.io/v2/assets/dusk-network",
-            "parser": lambda data: float(data["data"]["priceUsd"])
-        },
-        # 來源3: Kraken API (美國交易所)
-        {
-            "name": "Kraken",
-            "url": "https://api.kraken.com/0/public/Ticker",
-            "params": {"pair": "DUSKUSD"},
-            "parser": lambda data: float(data["result"]["DUSKUSD"]["c"][0])
-        },
-        # 來源4: CryptoCompare API
-        {
-            "name": "CryptoCompare",
-            "url": "https://min-api.cryptocompare.com/data/price",
-            "params": {"fsym": "DUSK", "tsyms": "USD"},
-            "parser": lambda data: data["USD"]
-        }
-    ]
-    
-    for source in price_sources:
-        try:
-            print(f"🔄 嘗試從 {source['name']} 獲取價格...")
-            response = requests.get(source['url'], 
-                                  params=source.get('params', {}), 
-                                  timeout=10)
-            data = response.json()
-            price = source['parser'](data)
-            print(f"✅ 從 {source['name']} 獲取價格成功: ${price:.5f}")
-            return price, source['name']
-        except Exception as e:
-            print(f"❌ {source['name']} 失敗: {e}")
-            continue
-    
-    return None, None
-
-def get_kline_data_from_alternative():
-    """從替代來源獲取K線數據"""
-    try:
-        # 使用 CryptoCompare 的歷史分鐘數據
-        url = "https://min-api.cryptocompare.com/data/v2/histominute"
-        params = {
-            "fsym": "DUSK",
-            "tsym": "USD",
-            "limit": 20,
-            "aggregate": 1
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        
-        if data.get("Response") == "Success":
-            klines = []
-            for candle in data["Data"]["Data"]:
-                klines.append({
-                    "time": candle["time"] * 1000,  # 轉為毫秒
-                    "open": candle["open"],
-                    "high": candle["high"],
-                    "low": candle["low"],
-                    "close": candle["close"],
-                    "volume": candle["volumefrom"],  # DUSK 成交量
-                    "quote_volume": candle["volumeto"]  # USD 成交額
-                })
-            
-            print(f"✅ 成功獲取 {len(klines)} 根K線數據")
-            return klines
-        else:
-            print(f"⚠️ CryptoCompare 返回異常: {data.get('Message')}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ 獲取K線數據失敗: {e}")
-        return None
-
-def analyze_market_data():
+def analyze_market_data(api: BinanceUSAPI) -> Optional[Dict]:
     """分析市場數據"""
+    print("📊 獲取市場數據...")
+    
     # 獲取當前價格
-    current_price, source_name = get_alternative_price()
+    current_price = api.get_price(SYMBOL)
     if current_price is None:
-        print("❌ 無法從任何來源獲取價格")
+        print("❌ 無法獲取當前價格")
         return None
     
     # 獲取K線數據
-    klines = get_kline_data_from_alternative()
+    klines = api.get_klines(SYMBOL, "1m", 15)
     if not klines or len(klines) < 5:
         print("❌ 無法獲取足夠的K線數據")
         return None
     
-    latest = klines[-1]
-    previous = klines[-2] if len(klines) > 1 else latest
+    # 確保使用完整的K線（避免使用當前正在形成的K線）
+    # 取倒數第二根K線作為最新完整K線
+    if len(klines) >= 2:
+        latest = klines[-2]  # 前一根完整的K線
+    else:
+        latest = klines[-1]
+    
+    if len(klines) >= 3:
+        previous = klines[-3]  # 前兩根的K線
+    else:
+        previous = klines[-2] if len(klines) >= 2 else latest
     
     # 判斷K線顏色
     is_red = latest["close"] < latest["open"]
@@ -142,33 +190,35 @@ def analyze_market_data():
     # 計算價格變化
     price_change = ((latest["close"] - previous["close"]) / previous["close"]) * 100
     
-    # 計算平均成交量
-    volumes = [k["volume"] for k in klines[-5:]]
-    avg_volume = sum(volumes) / len(volumes)
+    # 計算平均成交量（使用最近5根完整K線）
+    recent_klines = klines[-7:-2] if len(klines) >= 7 else klines[:-1]
+    volumes = [k["volume"] for k in recent_klines[-5:]]
+    avg_volume = sum(volumes) / len(volumes) if volumes else latest["volume"]
     
     # 計算成交量比率
     volume_ratio = latest["volume"] / avg_volume if avg_volume > 0 else 1
     
-    # 計算成交額
-    total_value = latest["quote_volume"]
-    buy_volume = latest["volume"] * 0.5  # 模擬買入量
-    buy_value = buy_volume * latest["close"]
-    sell_volume = latest["volume"] * 0.5  # 模擬賣出量
-    sell_value = sell_volume * latest["close"]
+    # 計算買入/賣出數據
+    buy_volume = latest["taker_buy_volume"]
+    sell_volume = latest["volume"] - buy_volume
+    
+    buy_value = latest["taker_buy_quote_volume"]
+    sell_value = latest["quote_volume"] - buy_value
+    
+    # 計算買賣比率
+    buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else 999
     
     print(f"📊 數據分析完成:")
-    print(f"   數據來源: {source_name}")
     print(f"   當前價格: ${current_price:.5f}")
     print(f"   K線收盤價: ${latest['close']:.5f}")
     print(f"   價格變化: {price_change:.2f}%")
-    print(f"   成交量: {latest['volume']:,.0f} DUSK")
-    print(f"   成交額: ${latest['quote_volume']:,.2f}")
+    print(f"   成交量比率: {volume_ratio:.2f}x")
+    print(f"   買賣比率: {buy_sell_ratio:.2f}")
     
     return {
-        "symbol": "DUSK/USDT",
-        "source": source_name,
+        "symbol": SYMBOL,
         "current_price": current_price,
-        "kline_price": latest["close"],
+        "kline_data": latest,
         "open": latest["open"],
         "high": latest["high"],
         "low": latest["low"],
@@ -183,137 +233,163 @@ def analyze_market_data():
         "sell_volume": sell_volume,
         "buy_value": buy_value,
         "sell_value": sell_value,
+        "buy_sell_ratio": buy_sell_ratio,
+        "avg_volume": avg_volume,
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }
 
-def check_and_alert():
-    """檢查市場狀況並發送警報"""
-    print("📊 獲取市場數據...")
-    
-    # 獲取數據
-    market_data = analyze_market_data()
-    if not market_data:
-        print("❌ 無法獲取市場數據")
-        return False
-    
-    # 顯示數據
-    print(f"✅ 價格獲取成功")
-    print(f"💰 當前價格: ${market_data['current_price']:.5f}")
-    print(f"📈 K線收盤價: ${market_data['close']:.5f}")
-    print(f"📊 價格變化: {market_data['price_change']:.2f}%")
-    print(f"📦 成交量: {market_data['volume']:,.0f} DUSK")
-    print(f"🎨 K線顏色: {'🔴 陰線' if market_data['is_red'] else '🟢 陽線'}")
+def send_alert(market_data: Dict) -> Tuple[bool, str]:
+    """發送警報"""
+    alert_sent = False
+    alert_type = "NORMAL"
     
     # 警報條件
     volume_threshold = 2.0
-    price_change_threshold = 2.0
+    buy_sell_threshold = 2.0
     
-    current_time = datetime.now().strftime("%H:%M:%S")
-    alert_sent = False
+    current_time = market_data["timestamp"]
     
-    # 情況1: 陰線但成交量異常
-    if market_data["is_red"] and market_data["volume_ratio"] > volume_threshold:
+    # 情況1: 陰線但大量買入
+    if market_data["is_red"] and market_data["buy_sell_ratio"] > buy_sell_threshold:
         message = f"""
-🚨 <b>異常成交量警報 - DUSK/USDT</b>
+🚨 <b>異常買入警報 - {SYMBOL}</b>
 
 📉 <b>K線類型:</b> 陰線下跌
 💰 <b>當前價格:</b> ${market_data['current_price']:.5f}
 📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
 📈 <b>價格變化:</b> {market_data['price_change']:.2f}%
 📊 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
-📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
-💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
+💵 <b>買入金額:</b> ${market_data['buy_value']:,.2f}
+🔄 <b>買/賣比率:</b> {market_data['buy_sell_ratio']:.2f}
 
-⚠️ <b>檢測到陰線中出現異常成交量！</b>
+⚠️ <b>檢測到陰線中出現大量買單！</b>
 
 ⏰ <b>時間:</b> {current_time}
-🔗 <b>數據來源:</b> {market_data['source']}
+🔗 <b>數據來源:</b> Binance.US API
 """
-        send_telegram(message)
-        alert_sent = True
-        print("✅ 發送異常成交量警報")
+        if send_telegram(message):
+            alert_sent = True
+            alert_type = "BUY_IN_RED"
+            print("✅ 發送異常買入警報")
     
-    # 情況2: 陽線但成交量異常
-    elif market_data["is_green"] and market_data["volume_ratio"] > volume_threshold:
+    # 情況2: 陽線但大量賣出
+    elif market_data["is_green"] and market_data["buy_sell_ratio"] < (1/buy_sell_threshold):
         message = f"""
-🚨 <b>異常成交量警報 - DUSK/USDT</b>
+🚨 <b>異常賣出警報 - {SYMBOL}</b>
 
 📈 <b>K線類型:</b> 陽線上漲
 💰 <b>當前價格:</b> ${market_data['current_price']:.5f}
 📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
 📈 <b>價格變化:</b> {market_data['price_change']:.2f}%
 📊 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
-📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
-💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
+💸 <b>賣出金額:</b> ${market_data['sell_value']:,.2f}
+🔄 <b>賣/買比率:</b> {1/market_data['buy_sell_ratio']:.2f}
 
-⚠️ <b>檢測到陽線中出現異常成交量！</b>
-
-⏰ <b>時間:</b> {current_time}
-🔗 <b>數據來源:</b> {market_data['source']}
-"""
-        send_telegram(message)
-        alert_sent = True
-        print("✅ 發送異常成交量警報")
-    
-    # 情況3: 價格大幅波動
-    elif abs(market_data["price_change"]) > price_change_threshold:
-        direction = "上漲" if market_data["price_change"] > 0 else "下跌"
-        message = f"""
-⚠️ <b>價格大幅波動 - DUSK/USDT</b>
-
-💰 <b>當前價格:</b> ${market_data['current_price']:.5f}
-📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
-📈 <b>價格變化:</b> {market_data['price_change']:.2f}% ({direction})
-📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
-💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
-🎨 <b>K線狀態:</b> {'🔴 陰線' if market_data['is_red'] else '🟢 陽線'}
+⚠️ <b>檢測到陽線中出現大量賣單！</b>
 
 ⏰ <b>時間:</b> {current_time}
-🔗 <b>數據來源:</b> {market_data['source']}
+🔗 <b>數據來源:</b> Binance.US API
 """
-        send_telegram(message)
-        alert_sent = True
-        print("✅ 發送價格波動警報")
+        if send_telegram(message):
+            alert_sent = True
+            alert_type = "SELL_IN_GREEN"
+            print("✅ 發送異常賣出警報")
     
     # 發送狀態報告
     status_msg = f"""
-📊 <b>DUSK/USDT 監控報告</b>
+📊 <b>{SYMBOL} 實時監控報告</b>
 
 💰 <b>當前價格:</b> ${market_data['current_price']:.5f}
 📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
 📈 <b>價格變化:</b> {market_data['price_change']:.2f}%
-📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
+📦 <b>成交量:</b> {market_data['volume']:,.0f}
 💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
 📊 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
 🎨 <b>K線狀態:</b> {'🔴 陰線' if market_data['is_red'] else '🟢 陽線'}
 
 ⏰ <b>監控時間:</b> {current_time}
-🔗 <b>數據來源:</b> {market_data['source']}
+🔗 <b>數據來源:</b> Binance.US API
 """
     send_telegram(status_msg)
     
-    return True
+    return alert_sent, alert_type
+
+def run_monitoring_cycle(api: BinanceUSAPI, duration_minutes: int = 5) -> bool:
+    """運行監控循環"""
+    print(f"🔄 開始監控循環，持續 {duration_minutes} 分鐘...")
+    
+    start_time = time.time()
+    end_time = start_time + (duration_minutes * 60)
+    cycle_count = 0
+    
+    try:
+        while time.time() < end_time:
+            cycle_count += 1
+            current_time = datetime.now().strftime("%H:%M:%S")
+            print(f"\n🔄 循環 #{cycle_count} - {current_time}")
+            
+            # 獲取並分析市場數據
+            market_data = analyze_market_data(api)
+            
+            if market_data:
+                # 發送警報
+                alert_sent, alert_type = send_alert(market_data)
+                
+                if alert_sent:
+                    print(f"⚠️ 檢測到 {alert_type} 警報")
+                else:
+                    print(f"📊 市場狀態正常")
+            else:
+                print("❌ 數據獲取失敗")
+            
+            # 計算下一次檢查的時間
+            elapsed = time.time() - start_time
+            remaining = end_time - time.time()
+            
+            if remaining > 30:
+                # 等待30秒後進行下一次檢查
+                wait_time = 30 + random.uniform(-2, 2)  # 添加隨機性
+                print(f"⏳ 等待 {wait_time:.1f}秒後繼續...")
+                time.sleep(wait_time)
+            else:
+                break
+        
+        print(f"✅ 監控循環完成，共執行 {cycle_count} 次檢查")
+        return True
+        
+    except KeyboardInterrupt:
+        print("\n⏹️ 監控手動停止")
+        return True
+    except Exception as e:
+        print(f"❌ 監控循環錯誤: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def main():
     """主函數"""
-    print("=" * 60)
-    print("🚀 DUSK/USDT 實時監控系統 (多數據源版)")
-    print("=" * 60)
-    print(f"📊 交易對: DUSK/USDT")
+    print("=" * 70)
+    print("🚀 DUSK/USDT 實時監控系統 (Binance.US 數據源)")
+    print("=" * 70)
+    print(f"📊 交易對: {SYMBOL}")
     print(f"⏰ 時間框架: 1分鐘K線")
     print(f"🔔 Telegram 通知: 已啟用")
-    print(f"🔗 數據來源: 多來源備援系統")
-    print("=" * 60)
+    print(f"🔗 數據來源: Binance.US API")
+    print(f"⏱️  請求間隔: {REQUEST_DELAY}秒")
+    print(f"🔄 最大重試次數: {MAX_RETRIES}")
+    print("=" * 70)
     
     # 測試 Telegram 連線
     print("📡 測試 Telegram 連線...")
     test_msg = f"""
-🤖 <b>DUSK/USDT 監控系統啟動</b>
+🤖 <b>{SYMBOL} 監控系統啟動</b>
 
-✅ 系統已使用多數據源模式
-💰 使用美國可訪問的API來源
-📊 交易對: DUSK/USDT
+✅ 系統使用 Binance.US API
+💰 美國合規數據源
+📊 交易對: {SYMBOL}
 ⏰ 時間框架: 1分鐘K線
+🔄 監控間隔: 30秒
+⏱️  請求延遲: {REQUEST_DELAY}秒
 
 🕐 啟動時間: {datetime.now().strftime('%H:%M:%S')}
 """
@@ -324,16 +400,19 @@ def main():
     
     print("✅ Telegram 連線成功")
     
-    # 執行一次完整監控
-    success = check_and_alert()
+    # 初始化 API 客戶端
+    api = BinanceUSAPI()
     
-    print("\n" + "=" * 60)
+    # 運行監控循環
+    success = run_monitoring_cycle(api, duration_minutes=5)
+    
+    print("\n" + "=" * 70)
     if success:
         print("✅ 監控任務執行完成")
         print(f"⏰ 完成時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
         print("❌ 監控任務執行失敗")
-    print("=" * 60)
+    print("=" * 70)
     
     return success
 
