@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 幣安 DUSKUSDT 快速掃描版 - 30秒內完成
 """
@@ -8,6 +7,7 @@ import requests
 from datetime import datetime
 from binance.client import Client
 import signal
+import random
 
 # 超時處理
 class TimeoutException(Exception):
@@ -125,7 +125,6 @@ def quick_scan():
         
         # 8. 隨機狀態報告
         if not alert_sent:
-            import random
             if random.random() < 0.2:  # 20%機率
                 print("📊 發送狀態報告")
                 quick_telegram(f"📊 DUSKUSDT 狀態\n價格: {current_price}\n時間: {current_time}")
