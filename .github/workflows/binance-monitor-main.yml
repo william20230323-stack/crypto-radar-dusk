@@ -2,7 +2,7 @@ name: 幣安監控 - 主系統
 
 on:
   schedule:
-    - cron: '*/2 * * * *'  # 每2分鐘一次
+    - cron: '*/2 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -13,9 +13,9 @@ jobs:
     steps:
       - name: 1. 隨機延遲啟動
         run: |
-          echo "🕐 隨機延遲啟動..."
-          sleep $((RANDOM % 15 + 10))
-          echo "✅ 延遲結束"
+          delay=$((RANDOM % 15 + 10))
+          echo "🕐 隨機延遲 ${delay} 秒"
+          sleep $delay
 
       - name: 2. 檢出代碼
         uses: actions/checkout@v3
@@ -24,11 +24,9 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          # 移除 cache 設定，避免錯誤
 
       - name: 4. 安裝必要套件
         run: |
-          echo "📦 安裝必要套件..."
           pip install python-binance==1.0.19 requests==2.31.0
           echo "✅ 套件安裝完成"
 
@@ -38,5 +36,4 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           MONITOR_MODE: "main"
         run: |
-          echo "🚀 啟動智能監控系統..."
           python binance_smart_monitor.py
