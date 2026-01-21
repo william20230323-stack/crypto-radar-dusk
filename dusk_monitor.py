@@ -8,7 +8,7 @@ from datetime import datetime
 # 從環境變數讀取設定
 TG_TOKEN = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
-SYMBOL = "DUSKUSDT"
+SYMBOL = "DUSK-USDT"  # OKX 使用短橫線格式
 
 # 檢查設定
 if not TG_TOKEN or not TG_CHAT_ID:
@@ -32,90 +32,75 @@ def send_telegram(message):
         print(f"❌ Telegram 錯誤: {e}")
         return False
 
-def get_binance_real_price(symbol="DUSKUSDT"):
-    """從 Binance 獲取真實價格 - 使用正確的API"""
+def get_okx_real_price(symbol="DUSK-USDT"):
+    """從 OKX 獲取真實價格"""
     try:
-        # 方法1: 使用 ticker/price API
-        url = f"https://api.binance.com/api/v3/ticker/price"
-        params = {"symbol": symbol}
+        url = "https://www.okx.com/api/v5/market/ticker"
+        params = {"instId": symbol}
+        
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
-        if 'price' in data:
-            price = float(data['price'])
-            print(f"✅ 從 ticker/price 獲取價格: ${price}")
+        if data.get("code") == "0" and len(data.get("data", [])) > 0:
+            ticker = data["data"][0]
+            price = float(ticker["last"])
+            print(f"✅ 從 OKX 獲取價格: ${price}")
             return price
         else:
-            print(f"⚠️ ticker/price API 返回異常: {data}")
+            print(f"⚠️ OKX API 返回異常: {data}")
+            return None
             
     except Exception as e:
-        print(f"❌ 方法1失敗: {e}")
-    
-    try:
-        # 方法2: 使用 ticker/24hr API 作為備用
-        url = f"https://api.binance.com/api/v3/ticker/24hr"
-        params = {"symbol": symbol}
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        
-        if 'lastPrice' in data:
-            price = float(data['lastPrice'])
-            print(f"✅ 從 ticker/24hr 獲取價格: ${price}")
-            return price
-        else:
-            print(f"⚠️ ticker/24hr API 返回異常: {data}")
-            
-    except Exception as e:
-        print(f"❌ 方法2失敗: {e}")
-    
-    return None
+        print(f"❌ 獲取OKX價格失敗: {e}")
+        return None
 
-def get_binance_klines(symbol="DUSKUSDT", interval="1m", limit=10):
-    """從 Binance 獲取真實 K 線數據"""
+def get_okx_klines(symbol="DUSK-USDT", interval="1m", limit=20):
+    """從 OKX 獲取真實 K 線數據"""
     try:
-        url = "https://api.binance.com/api/v3/klines"
+        url = "https://www.okx.com/api/v5/market/candles"
         params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
+            "instId": symbol,
+            "bar": interval,
+            "limit": str(limit)
         }
         
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
-        if not isinstance(data, list):
-            print(f"⚠️ K線API返回非列表數據: {data}")
+        if data.get("code") == "0" and len(data.get("data", [])) > 0:
+            klines = []
+            for k in data["data"]:
+                # OKX 返回格式: [時間戳, 開盤價, 最高價, 最低價, 收盤價, 成交量, 成交額, 成交量幣種]
+                klines.append({
+                    "time": int(k[0]),  # 時間戳 (毫秒)
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),  # 成交量
+                    "quote_volume": float(k[6]),  # 成交額 (USDT)
+                })
+            
+            print(f"✅ 成功獲取 {len(klines)} 根K線數據")
+            return klines
+        else:
+            print(f"⚠️ OKX K線API返回異常: {data}")
             return None
-        
-        klines = []
-        for k in data:
-            klines.append({
-                "time": k[0],
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-                "quote_volume": float(k[7]),  # 成交額
-                "taker_buy_volume": float(k[9])  # 主動買入成交量
-            })
-        
-        print(f"✅ 成功獲取 {len(klines)} 根K線數據")
-        return klines
+            
     except Exception as e:
-        print(f"❌ 獲取K線數據失敗: {e}")
+        print(f"❌ 獲取OKX K線數據失敗: {e}")
         return None
 
 def analyze_market_data():
     """分析真實市場數據"""
     # 獲取當前真實價格
-    current_price = get_binance_real_price(SYMBOL)
+    current_price = get_okx_real_price(SYMBOL)
     if current_price is None:
         print("❌ 無法獲取當前價格")
         return None
     
     # 獲取K線數據
-    klines = get_binance_klines(SYMBOL, "1m", 20)
+    klines = get_okx_klines(SYMBOL, "1m", 20)
     if not klines or len(klines) < 5:
         print("❌ 無法獲取足夠的K線數據")
         return None
@@ -137,23 +122,22 @@ def analyze_market_data():
     # 計算成交量比率
     volume_ratio = latest["volume"] / avg_volume if avg_volume > 0 else 1
     
-    # 計算買入金額（使用taker buy volume）
-    buy_volume = latest["taker_buy_volume"]
+    # 由於OKX API不提供買賣量明細，我們使用成交額作為參考
+    # 在真實交易中，可以通過其他方式獲取深度數據
+    buy_volume = latest["volume"] * 0.5  # 模擬買入量
     buy_value = buy_volume * latest["close"]
-    
-    # 計算賣出金額
-    sell_volume = latest["volume"] - buy_volume
+    sell_volume = latest["volume"] * 0.5  # 模擬賣出量
     sell_value = sell_volume * latest["close"]
     
-    # 買賣比率
-    buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else 999
+    # 買賣比率（使用成交量比率模擬）
+    buy_sell_ratio = volume_ratio  # 使用成交量比率作為參考
     
     print(f"📊 數據分析完成:")
     print(f"   當前價格: ${current_price:.5f}")
     print(f"   K線收盤價: ${latest['close']:.5f}")
     print(f"   價格變化: {price_change:.2f}%")
-    print(f"   成交量: {latest['volume']:,.0f}")
-    print(f"   買入金額: ${buy_value:,.2f}")
+    print(f"   成交量: {latest['volume']:,.0f} DUSK")
+    print(f"   成交額: ${latest['quote_volume']:,.2f}")
     
     return {
         "symbol": SYMBOL,
@@ -192,7 +176,8 @@ def check_and_alert():
     print(f"💰 當前價格: ${market_data['current_price']:.5f}")
     print(f"📈 K線收盤價: ${market_data['close']:.5f}")
     print(f"📊 價格變化: {market_data['price_change']:.2f}%")
-    print(f"📦 成交量: {market_data['volume']:,.0f}")
+    print(f"📦 成交量: {market_data['volume']:,.0f} DUSK")
+    print(f"💵 成交額: ${market_data['quote_volume']:,.2f}")
     print(f"🎨 K線顏色: {'🔴 陰線' if market_data['is_red'] else '🟢 陽線'}")
     
     # 警報條件
@@ -202,61 +187,64 @@ def check_and_alert():
     current_time = datetime.now().strftime("%H:%M:%S")
     alert_sent = False
     
-    # 情況1: 陰線但大量買入
-    if market_data["is_red"] and market_data["buy_sell_ratio"] > buy_sell_threshold:
+    # 情況1: 陰線但成交量異常（模擬大量買入）
+    if market_data["is_red"] and market_data["volume_ratio"] > volume_threshold:
         message = f"""
-🚨 <b>異常買入警報 - {SYMBOL}</b>
+🚨 <b>異常成交量警報 - DUSK/USDT</b>
 
 📉 <b>K線類型:</b> 陰線下跌
-💰 <b>Binance價格:</b> ${market_data['current_price']:.5f}
+💰 <b>OKX當前價格:</b> ${market_data['current_price']:.5f}
 📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
 📈 <b>價格變化:</b> {market_data['price_change']:.2f}%
-💵 <b>買入金額:</b> ${market_data['buy_value']:,.2f}
-🔄 <b>買/賣比率:</b> {market_data['buy_sell_ratio']:.2f}
+📊 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
+📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
+💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
 
-⚠️ <b>檢測到陰線中出現大量買單！</b>
+⚠️ <b>檢測到陰線中出現異常成交量！</b>
 
 ⏰ <b>時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance API 實時數據
+🔗 <b>數據來源:</b> OKX API 實時數據
 """
         send_telegram(message)
         alert_sent = True
-        print("✅ 發送異常買入警報")
+        print("✅ 發送異常成交量警報")
     
-    # 情況2: 陽線但大量賣出
-    elif market_data["is_green"] and market_data["buy_sell_ratio"] < (1/buy_sell_threshold):
+    # 情況2: 陽線但成交量異常（模擬大量賣出）
+    elif market_data["is_green"] and market_data["volume_ratio"] > volume_threshold:
         message = f"""
-🚨 <b>異常賣出警報 - {SYMBOL}</b>
+🚨 <b>異常成交量警報 - DUSK/USDT</b>
 
 📈 <b>K線類型:</b> 陽線上漲
-💰 <b>Binance價格:</b> ${market_data['current_price']:.5f}
+💰 <b>OKX當前價格:</b> ${market_data['current_price']:.5f}
 📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
 📈 <b>價格變化:</b> {market_data['price_change']:.2f}%
-💸 <b>賣出金額:</b> ${market_data['sell_value']:,.2f}
-🔄 <b>賣/買比率:</b> {1/market_data['buy_sell_ratio']:.2f}
+📊 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
+📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
+💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
 
-⚠️ <b>檢測到陽線中出現大量賣單！</b>
+⚠️ <b>檢測到陽線中出現異常成交量！</b>
 
 ⏰ <b>時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance API 實時數據
+🔗 <b>數據來源:</b> OKX API 實時數據
 """
         send_telegram(message)
         alert_sent = True
-        print("✅ 發送異常賣出警報")
+        print("✅ 發送異常成交量警報")
     
     # 發送狀態報告（無論是否有警報）
     status_msg = f"""
-📊 <b>{SYMBOL} 實時監控報告</b>
+📊 <b>DUSK/USDT 實時監控報告</b>
 
-💰 <b>Binance當前價格:</b> ${market_data['current_price']:.5f}
+💰 <b>OKX當前價格:</b> ${market_data['current_price']:.5f}
 📊 <b>K線收盤價:</b> ${market_data['close']:.5f}
 📈 <b>價格變化:</b> {market_data['price_change']:.2f}%
-📦 <b>成交量:</b> {market_data['volume']:,.0f}
+📦 <b>成交量:</b> {market_data['volume']:,.0f} DUSK
+💵 <b>成交額:</b> ${market_data['quote_volume']:,.2f}
 📊 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
 🎨 <b>K線狀態:</b> {'🔴 陰線' if market_data['is_red'] else '🟢 陽線'}
 
 ⏰ <b>監控時間:</b> {current_time}
-🔗 <b>數據驗證:</b> Binance API 實時
+🔗 <b>數據驗證:</b> OKX API 實時數據
 """
     send_telegram(status_msg)
     
@@ -265,22 +253,22 @@ def check_and_alert():
 def main():
     """主函數"""
     print("=" * 60)
-    print("🚀 DUSKUSDT 實時監控系統 (真實數據版)")
+    print("🚀 DUSK/USDT 實時監控系統 (OKX 數據源)")
     print("=" * 60)
-    print(f"📊 交易對: {SYMBOL}")
+    print(f"📊 交易對: DUSK-USDT")
     print(f"⏰ 時間框架: 1分鐘K線")
     print(f"🔔 Telegram 通知: 已啟用")
-    print(f"🔗 數據來源: Binance API 實時")
+    print(f"🔗 數據來源: OKX API 實時")
     print("=" * 60)
     
     # 測試 Telegram 連線
     print("📡 測試 Telegram 連線...")
     test_msg = f"""
-🤖 <b>DUSKUSDT 監控系統啟動</b>
+🤖 <b>DUSK/USDT 監控系統啟動</b>
 
-✅ 系統已使用真實數據模式
-💰 使用 Binance 實時價格API
-📊 交易對: {SYMBOL}
+✅ 系統已切換至 OKX 數據源
+💰 使用 OKX 實時價格API
+📊 交易對: DUSK-USDT
 ⏰ 時間框架: 1分鐘K線
 
 🕐 啟動時間: {datetime.now().strftime('%H:%M:%S')}
