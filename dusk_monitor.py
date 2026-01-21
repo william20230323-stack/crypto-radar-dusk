@@ -33,16 +33,42 @@ def send_telegram(message):
         return False
 
 def get_binance_real_price(symbol="DUSKUSDT"):
-    """從 Binance 獲取真實價格"""
+    """從 Binance 獲取真實價格 - 使用正確的API"""
     try:
+        # 方法1: 使用 ticker/price API
         url = f"https://api.binance.com/api/v3/ticker/price"
         params = {"symbol": symbol}
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
-        return float(data["price"])
+        
+        if 'price' in data:
+            price = float(data['price'])
+            print(f"✅ 從 ticker/price 獲取價格: ${price}")
+            return price
+        else:
+            print(f"⚠️ ticker/price API 返回異常: {data}")
+            
     except Exception as e:
-        print(f"❌ 獲取真實價格失敗: {e}")
-        return None
+        print(f"❌ 方法1失敗: {e}")
+    
+    try:
+        # 方法2: 使用 ticker/24hr API 作為備用
+        url = f"https://api.binance.com/api/v3/ticker/24hr"
+        params = {"symbol": symbol}
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        if 'lastPrice' in data:
+            price = float(data['lastPrice'])
+            print(f"✅ 從 ticker/24hr 獲取價格: ${price}")
+            return price
+        else:
+            print(f"⚠️ ticker/24hr API 返回異常: {data}")
+            
+    except Exception as e:
+        print(f"❌ 方法2失敗: {e}")
+    
+    return None
 
 def get_binance_klines(symbol="DUSKUSDT", interval="1m", limit=10):
     """從 Binance 獲取真實 K 線數據"""
@@ -57,6 +83,10 @@ def get_binance_klines(symbol="DUSKUSDT", interval="1m", limit=10):
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
+        if not isinstance(data, list):
+            print(f"⚠️ K線API返回非列表數據: {data}")
+            return None
+        
         klines = []
         for k in data:
             klines.append({
@@ -70,6 +100,7 @@ def get_binance_klines(symbol="DUSKUSDT", interval="1m", limit=10):
                 "taker_buy_volume": float(k[9])  # 主動買入成交量
             })
         
+        print(f"✅ 成功獲取 {len(klines)} 根K線數據")
         return klines
     except Exception as e:
         print(f"❌ 獲取K線數據失敗: {e}")
@@ -79,12 +110,14 @@ def analyze_market_data():
     """分析真實市場數據"""
     # 獲取當前真實價格
     current_price = get_binance_real_price(SYMBOL)
-    if not current_price:
+    if current_price is None:
+        print("❌ 無法獲取當前價格")
         return None
     
     # 獲取K線數據
     klines = get_binance_klines(SYMBOL, "1m", 20)
     if not klines or len(klines) < 5:
+        print("❌ 無法獲取足夠的K線數據")
         return None
     
     latest = klines[-1]
@@ -114,6 +147,13 @@ def analyze_market_data():
     
     # 買賣比率
     buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else 999
+    
+    print(f"📊 數據分析完成:")
+    print(f"   當前價格: ${current_price:.5f}")
+    print(f"   K線收盤價: ${latest['close']:.5f}")
+    print(f"   價格變化: {price_change:.2f}%")
+    print(f"   成交量: {latest['volume']:,.0f}")
+    print(f"   買入金額: ${buy_value:,.2f}")
     
     return {
         "symbol": SYMBOL,
@@ -238,8 +278,8 @@ def main():
     test_msg = f"""
 🤖 <b>DUSKUSDT 監控系統啟動</b>
 
-✅ 系統已切換至真實數據模式
-💰 將使用 Binance 實時價格
+✅ 系統已使用真實數據模式
+💰 使用 Binance 實時價格API
 📊 交易對: {SYMBOL}
 ⏰ 時間框架: 1分鐘K線
 
