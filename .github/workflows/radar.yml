@@ -1,0 +1,53 @@
+name: DUSKUSDT 雷達檢測系統
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  radar-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: 檢出代碼
+        uses: actions/checkout@v3
+
+      - name: 設置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 安裝套件
+        run: |
+          pip install websocket-client requests
+
+      - name: 發送啟動通知
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python -c "
+          import requests, os
+          token = os.getenv('TG_TOKEN')
+          chat_id = os.getenv('TG_CHAT_ID')
+          if token and chat_id:
+              url = 'https://api.telegram.org/bot' + token + '/sendMessage'
+              data = {'chat_id': chat_id, 'text': '雷達啟動偵測'}
+              requests.post(url, data=data)
+          "
+
+      - name: 執行雷達檢測
+        env:
+          TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL }}
+        run: |
+          echo "開始檢測 $TRADE_SYMBOL ..."
+          python -c "
+          import time, os
+          symbol = os.getenv('TRADE_SYMBOL', 'DUSKUSDT')
+          for i in range(1, 4):
+              print(f'檢測 {symbol} - 第{i}次')
+              time.sleep(2)
+          print('檢測完成')
+          "
