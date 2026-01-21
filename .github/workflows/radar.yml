@@ -40,14 +40,8 @@ jobs:
 
       - name: 執行雷達檢測
         env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL }}
         run: |
-          echo "開始檢測 $TRADE_SYMBOL ..."
-          python -c "
-          import time, os
-          symbol = os.getenv('TRADE_SYMBOL', 'DUSKUSDT')
-          for i in range(1, 4):
-              print(f'檢測 {symbol} - 第{i}次')
-              time.sleep(2)
-          print('檢測完成')
-          "
+          python radar_scanner.py
