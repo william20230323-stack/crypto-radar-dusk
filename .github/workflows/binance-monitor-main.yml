@@ -1,37 +1,162 @@
-name: 幣安監控 - 主系統
+#!/usr/bin/env python3
+"""
+幣安 DUSKUSDT 快速掃描版 - 30秒內完成
+"""
 
-on:
-  schedule:
-    - cron: '*/2 * * * *'
-  workflow_dispatch:
+import os
+import requests
+from datetime import datetime
+from binance.client import Client
+import signal
 
-jobs:
-  monitor:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
+# 超時處理
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException("掃描超時")
+
+# ========== 配置 ==========
+SYMBOL = "DUSKUSDT"
+TIMEFRAME = "1m"
+
+# ========== Telegram 快速通知 ==========
+def quick_telegram(message):
+    """快速發送 Telegram"""
+    try:
+        token = os.getenv('TG_TOKEN')
+        chat_id = os.getenv('TG_CHAT_ID')
+        if not token or not chat_id:
+            return False
+        
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = requests.post(url, json=payload, timeout=3)
+        return response.status_code == 200
+    except:
+        return False
+
+# ========== 主掃描 ==========
+def quick_scan():
+    """快速掃描"""
+    print("⚡ DUSKUSDT 快速掃描啟動")
+    print(f"⏰ 時間: {datetime.now().strftime('%H:%M:%S')}")
     
-    steps:
-      - name: 1. 隨機延遲啟動
-        run: |
-          delay=$((RANDOM % 15 + 10))
-          echo "🕐 隨機延遲 ${delay} 秒"
-          sleep $delay
+    try:
+        # 設置25秒超時
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(25)
+        
+        client = Client()
+        
+        # 1. 獲取最新K線
+        print("📡 獲取K線數據...")
+        klines = client.get_klines(
+            symbol=SYMBOL,
+            interval=TIMEFRAME,
+            limit=2
+        )
+        
+        if len(klines) < 2:
+            print("❌ 數據不足")
+            return False
+        
+        latest = klines[-1]
+        prev = klines[-2]
+        
+        # 2. 基本數據
+        open_price = float(latest[1])
+        close_price = float(latest[4])
+        volume = float(latest[5])
+        prev_volume = float(prev[5])
+        
+        # 3. 當前價格
+        print("📈 獲取當前價格...")
+        ticker = client.get_symbol_ticker(symbol=SYMBOL)
+        current_price = float(ticker['price'])
+        
+        # 4. 簡單分析
+        is_bearish = close_price < open_price
+        is_bullish = close_price > open_price
+        volume_ratio = volume / prev_volume if prev_volume > 0 else 1
+        
+        # 5. 訂單簿
+        print("📊 獲取訂單簿...")
+        depth = client.get_order_book(symbol=SYMBOL, limit=3)
+        bids = depth['bids']
+        asks = depth['asks']
+        
+        buy_pressure = sum(float(bid[1]) for bid in bids)
+        sell_pressure = sum(float(ask[1]) for ask in asks)
+        total = buy_pressure + sell_pressure
+        
+        buy_ratio = buy_pressure / total if total > 0 else 0
+        sell_ratio = sell_pressure / total if total > 0 else 0
+        
+        # 6. 輸出結果
+        current_time = datetime.now().strftime('%H:%M:%S')
+        
+        print("\n" + "=" * 40)
+        print("📊 掃描結果:")
+        print(f"💰 價格: {current_price} USDT")
+        print(f"📈 成交量: {volume_ratio:.1f}倍")
+        print(f"🟢 買單比例: {buy_ratio:.1%}")
+        print(f"🔴 賣單比例: {sell_ratio:.1%}")
+        print(f"🎯 K線: {'陰線' if is_bearish else '陽線' if is_bullish else '十字線'}")
+        print(f"🕒 時間: {current_time}")
+        print("=" * 40)
+        
+        # 7. 檢查警報
+        alert_sent = False
+        
+        if is_bearish and volume_ratio > 3.0 and buy_ratio > 0.6:
+            print("🚨 觸發: 陰線大量買盤")
+            quick_telegram(f"🚨 陰線大量買盤\n價格: {current_price}\n買單: {buy_ratio:.1%}\n時間: {current_time}")
+            alert_sent = True
+            
+        elif is_bullish and volume_ratio > 3.0 and sell_ratio > 0.6:
+            print("🚨 觸發: 陽線大量賣盤")
+            quick_telegram(f"🚨 陽線大量賣盤\n價格: {current_price}\n賣單: {sell_ratio:.1%}\n時間: {current_time}")
+            alert_sent = True
+        
+        # 8. 隨機狀態報告
+        if not alert_sent:
+            import random
+            if random.random() < 0.2:  # 20%機率
+                print("📊 發送狀態報告")
+                quick_telegram(f"📊 DUSKUSDT 狀態\n價格: {current_price}\n時間: {current_time}")
+            else:
+                print("✅ 掃描完成，無異常")
+        
+        # 取消超時
+        signal.alarm(0)
+        print("✅ 掃描成功完成")
+        return True
+        
+    except TimeoutException:
+        print("⏰ 掃描超時，強制結束")
+        return False
+    except Exception as e:
+        print(f"❌ 掃描錯誤: {str(e)[:100]}")
+        return False
+    finally:
+        # 確保取消超時
+        signal.alarm(0)
 
-      - name: 2. 檢出代碼
-        uses: actions/checkout@v3
-
-      - name: 3. 設置 Python 環境
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: 4. 安裝必要套件
-        run: |
-          pip install python-binance==1.0.19 requests==2.31.0
-
-      - name: 5. 執行智能監控
-        env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          python binance_smart_monitor.py
+# ========== 主程序 ==========
+if __name__ == "__main__":
+    print("🚀 DUSKUSDT 快速掃描系統啟動")
+    print("=" * 50)
+    
+    success = quick_scan()
+    
+    if success:
+        print("\n🎉 任務成功完成")
+        exit(0)
+    else:
+        print("\n❌ 任務執行失敗")
+        exit(1)
