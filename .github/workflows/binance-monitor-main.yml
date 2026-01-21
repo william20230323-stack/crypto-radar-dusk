@@ -1,20 +1,49 @@
 """
 幣安 DUSKUSDT 快速掃描版 - 30秒內完成
+修正版：移除 signal，避免環境問題
 """
 
 import os
 import requests
 from datetime import datetime
 from binance.client import Client
-import signal
 import random
+import functools
+import errno
+import time
 
-# 超時處理
-class TimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutException("掃描超時")
+# 超時裝飾器
+def timeout(seconds=25, error_message=os.strerror(errno.ETIME)):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            import threading
+            
+            class InterruptableThread(threading.Thread):
+                def __init__(self):
+                    super().__init__()
+                    self.result = None
+                    self.exception = None
+                
+                def run(self):
+                    try:
+                        self.result = func(*args, **kwargs)
+                    except Exception as e:
+                        self.exception = e
+            
+            thread = InterruptableThread()
+            thread.start()
+            thread.join(seconds)
+            
+            if thread.is_alive():
+                print("⏰ 掃描超時，強制結束")
+                return False
+            if thread.exception:
+                raise thread.exception
+            return thread.result
+        
+        return wrapper
+    return decorator
 
 # ========== 配置 ==========
 SYMBOL = "DUSKUSDT"
@@ -27,6 +56,7 @@ def quick_telegram(message):
         token = os.getenv('TG_TOKEN')
         chat_id = os.getenv('TG_CHAT_ID')
         if not token or not chat_id:
+            print("⚠️ 未設置 Telegram 環境變數")
             return False
         
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -37,21 +67,28 @@ def quick_telegram(message):
         }
         response = requests.post(url, json=payload, timeout=3)
         return response.status_code == 200
-    except:
+    except Exception as e:
+        print(f"⚠️ Telegram 發送失敗: {str(e)[:50]}")
         return False
 
 # ========== 主掃描 ==========
+@timeout(seconds=25)
 def quick_scan():
-    """快速掃描"""
+    """快速掃描（25秒超時）"""
     print("⚡ DUSKUSDT 快速掃描啟動")
-    print(f"⏰ 時間: {datetime.now().strftime('%H:%M:%S')}")
+    print(f"⏰ 時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
-        # 設置25秒超時
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(25)
+        # 初始化幣安客戶端（使用環境變數或默認）
+        api_key = os.getenv('BINANCE_API_KEY', '')
+        api_secret = os.getenv('BINANCE_API_SECRET', '')
         
-        client = Client()
+        if api_key and api_secret:
+            client = Client(api_key, api_secret)
+            print("🔑 使用 API 密鑰連接")
+        else:
+            client = Client()
+            print("🔗 使用公開 API 連接")
         
         # 1. 獲取最新K線
         print("📡 獲取K線數據...")
@@ -71,6 +108,8 @@ def quick_scan():
         # 2. 基本數據
         open_price = float(latest[1])
         close_price = float(latest[4])
+        high_price = float(latest[2])
+        low_price = float(latest[3])
         volume = float(latest[5])
         prev_volume = float(prev[5])
         
@@ -82,11 +121,12 @@ def quick_scan():
         # 4. 簡單分析
         is_bearish = close_price < open_price
         is_bullish = close_price > open_price
+        is_doji = abs(close_price - open_price) / max(open_price, close_price) < 0.001
         volume_ratio = volume / prev_volume if prev_volume > 0 else 1
         
         # 5. 訂單簿
         print("📊 獲取訂單簿...")
-        depth = client.get_order_book(symbol=SYMBOL, limit=3)
+        depth = client.get_order_book(symbol=SYMBOL, limit=5)
         bids = depth['bids']
         asks = depth['asks']
         
@@ -97,58 +137,81 @@ def quick_scan():
         buy_ratio = buy_pressure / total if total > 0 else 0
         sell_ratio = sell_pressure / total if total > 0 else 0
         
-        # 6. 輸出結果
+        # 6. 價格變化百分比
+        price_change_pct = ((current_price - open_price) / open_price * 100) if open_price > 0 else 0
+        
+        # 7. 輸出結果
         current_time = datetime.now().strftime('%H:%M:%S')
         
-        print("\n" + "=" * 40)
-        print("📊 掃描結果:")
-        print(f"💰 價格: {current_price} USDT")
-        print(f"📈 成交量: {volume_ratio:.1f}倍")
+        print("\n" + "=" * 50)
+        print("📊 DUSKUSDT 掃描結果")
+        print("=" * 50)
+        print(f"💰 當前價格: {current_price:.6f} USDT")
+        print(f"📈 開盤價格: {open_price:.6f} USDT")
+        print(f"📉 價格變化: {price_change_pct:+.2f}%")
+        print(f"📊 最高/最低: {high_price:.6f} / {low_price:.6f}")
+        print(f"📈 成交量比: {volume_ratio:.1f}倍")
         print(f"🟢 買單比例: {buy_ratio:.1%}")
         print(f"🔴 賣單比例: {sell_ratio:.1%}")
-        print(f"🎯 K線: {'陰線' if is_bearish else '陽線' if is_bullish else '十字線'}")
-        print(f"🕒 時間: {current_time}")
-        print("=" * 40)
+        print(f"🎯 K線類型: {'陰線' if is_bearish else '陽線' if is_bullish else '十字線'}")
+        print(f"🕒 掃描時間: {current_time}")
+        print("=" * 50)
         
-        # 7. 檢查警報
+        # 8. 檢查警報條件
         alert_sent = False
         
+        # 警報條件1: 陰線但買盤強勁
         if is_bearish and volume_ratio > 3.0 and buy_ratio > 0.6:
-            print("🚨 觸發: 陰線大量買盤")
-            quick_telegram(f"🚨 陰線大量買盤\n價格: {current_price}\n買單: {buy_ratio:.1%}\n時間: {current_time}")
+            alert_msg = f"🚨 DUSKUSDT 陰線大量買盤\n"
+            alert_msg += f"💰 價格: {current_price:.6f}\n"
+            alert_msg += f"📈 成交量: {volume_ratio:.1f}倍\n"
+            alert_msg += f"🟢 買單比例: {buy_ratio:.1%}\n"
+            alert_msg += f"⏰ 時間: {current_time}"
+            
+            print("🚨 觸發警報: 陰線大量買盤")
+            quick_telegram(alert_msg)
             alert_sent = True
             
+        # 警報條件2: 陽線但賣盤強勁
         elif is_bullish and volume_ratio > 3.0 and sell_ratio > 0.6:
-            print("🚨 觸發: 陽線大量賣盤")
-            quick_telegram(f"🚨 陽線大量賣盤\n價格: {current_price}\n賣單: {sell_ratio:.1%}\n時間: {current_time}")
+            alert_msg = f"🚨 DUSKUSDT 陽線大量賣盤\n"
+            alert_msg += f"💰 價格: {current_price:.6f}\n"
+            alert_msg += f"📈 成交量: {volume_ratio:.1f}倍\n"
+            alert_msg += f"🔴 賣單比例: {sell_ratio:.1%}\n"
+            alert_msg += f"⏰ 時間: {current_time}"
+            
+            print("🚨 觸發警報: 陽線大量賣盤")
+            quick_telegram(alert_msg)
             alert_sent = True
         
-        # 8. 隨機狀態報告
+        # 9. 隨機狀態報告（20%機率）
         if not alert_sent:
-            if random.random() < 0.2:  # 20%機率
+            if random.random() < 0.2:
+                status_msg = f"📊 DUSKUSDT 狀態報告\n"
+                status_msg += f"💰 價格: {current_price:.6f}\n"
+                status_msg += f"📈 變化: {price_change_pct:+.2f}%\n"
+                status_msg += f"🟢 買盤: {buy_ratio:.1%}\n"
+                status_msg += f"⏰ 時間: {current_time}"
+                
                 print("📊 發送狀態報告")
-                quick_telegram(f"📊 DUSKUSDT 狀態\n價格: {current_price}\n時間: {current_time}")
+                quick_telegram(status_msg)
             else:
-                print("✅ 掃描完成，無異常")
+                print("✅ 掃描完成，無異常警報")
         
-        # 取消超時
-        signal.alarm(0)
         print("✅ 掃描成功完成")
         return True
         
-    except TimeoutException:
-        print("⏰ 掃描超時，強制結束")
-        return False
     except Exception as e:
         print(f"❌ 掃描錯誤: {str(e)[:100]}")
         return False
-    finally:
-        # 確保取消超時
-        signal.alarm(0)
 
 # ========== 主程序 ==========
 if __name__ == "__main__":
     print("🚀 DUSKUSDT 快速掃描系統啟動")
+    print("=" * 50)
+    print(f"🎯 交易對: {SYMBOL}")
+    print(f"⏱️  時間框架: {TIMEFRAME}")
+    print(f"⏳ 超時時間: 25秒")
     print("=" * 50)
     
     success = quick_scan()
