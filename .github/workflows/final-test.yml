@@ -1,0 +1,67 @@
+name: 最終通知測試
+
+on:
+  workflow_dispatch:
+
+jobs:
+  final-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 測試通知功能
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          echo "🎯 最終通知測試"
+          echo "Chat ID: $TG_CHAT_ID"
+          
+          python3 -c "
+          import requests, os, datetime
+          
+          token = os.getenv('TG_TOKEN')
+          chat_id = os.getenv('TG_CHAT_ID')
+          
+          print(f'✅ 使用 Chat ID: {chat_id}')
+          
+          if token and chat_id:
+              now = datetime.datetime.now().strftime('%H:%M:%S')
+              
+              # 測試1：簡單訊息
+              print('📤 發送測試訊息1...')
+              url = f'https://api.telegram.org/bot{token}/sendMessage'
+              data1 = {
+                  'chat_id': chat_id,
+                  'text': f'✅ 測試成功！\n時間: {now}\nChat ID: {chat_id}'
+              }
+              
+              try:
+                  r1 = requests.post(url, json=data1, timeout=10)
+                  print(f'測試1狀態碼: {r1.status_code}')
+                  if r1.status_code == 200:
+                      print('🎉 測試1成功！請檢查 Telegram')
+                  else:
+                      print(f'測試1失敗: {r1.text}')
+              except Exception as e:
+                  print(f'測試1錯誤: {e}')
+              
+              # 測試2：雷達啟動訊息
+              print('📤 發送測試訊息2...')
+              data2 = {
+                  'chat_id': chat_id,
+                  'text': '雷達啟動偵測'
+              }
+              
+              try:
+                  r2 = requests.post(url, json=data2, timeout=10)
+                  print(f'測試2狀態碼: {r2.status_code}')
+                  if r2.status_code == 200:
+                      print('🎉 測試2成功！')
+                  else:
+                      print(f'測試2失敗: {r2.text}')
+              except Exception as e:
+                  print(f'測試2錯誤: {e}')
+                  
+          else:
+              print('❌ 缺少環境變量')
+          "
