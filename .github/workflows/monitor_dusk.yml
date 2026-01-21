@@ -3,7 +3,7 @@ name: DUSKUSDT 1-Minute Monitor
 on:
   schedule:
     - cron: '*/2 * * * *'  # 每2分鐘執行一次
-  workflow_dispatch:  # 允許手動觸發
+  workflow_dispatch:       # 允許手動觸發
 
 jobs:
   monitor:
@@ -27,9 +27,6 @@ jobs:
       env:
         TG_TOKEN: ${{ secrets.TG_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL }}
       run: |
-        echo "🚀 Starting DUSKUSDT Monitor..."
-        echo "Symbol: $TRADE_SYMBOL"
-        echo "Timeframe: 1m"
-        python run.py
+        echo "🚀 啟動 DUSKUSDT 監控系統..."
+        python dusk_monitor.py
