@@ -1,23 +1,15 @@
-name: DUSKUSDT Minute Monitor
+name: DUSKUSDT 1-Minute Monitor
 
 on:
   # 定时触发 - 每分钟一次
   schedule:
     - cron: '*/1 * * * *'
   
-  # 手动触发 - 提供清晰的启动选项
+  # 手动触发
   workflow_dispatch:
     inputs:
-      run_mode:
-        description: '运行模式'
-        required: true
-        default: 'single'
-        type: choice
-        options:
-          - single
-          - continuous
       debug_mode:
-        description: '调试模式'
+        description: '开启调试模式'
         required: false
         default: 'false'
         type: boolean
@@ -50,70 +42,101 @@ jobs:
           pip install requests python-dotenv pandas ccxt python-telegram-bot schedule
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       
+      - name: 调试 - 查看所有可用Secrets
+        run: |
+          echo "=== 调试：环境变量设置情况 ==="
+          echo "注：Secret值不会显示，只显示名称"
+          echo ""
+          echo "1. 尝试读取可能的TRADE_SYMBOL相关Secret："
+          echo "   GitHub Secret名称可能是：TRADE_SYM, TRADE_SYMBOL, 或其他"
+          echo ""
+          echo "2. 当前工作流配置的环境变量："
+          echo "   TG_TOKEN: ${{ secrets.TG_TOKEN != '' && '已设置' || '未设置' }}"
+          echo "   TG_CHAT_ID: ${{ secrets.TG_CHAT_ID != '' && '已设置' || '未设置' }}"
+          echo "   TRADE_SYM: ${{ secrets.TRADE_SYM != '' && '已设置' || '未设置' }}"
+          echo ""
+          echo "3. 尝试不同名称的Secret："
+          echo "   TRADE_SYM 存在: ${{ secrets.TRADE_SYM != '' && '是' || '否' }}"
+          echo "   TRADE_SYMBOL 存在: ${{ secrets.TRADE_SYMBOL != '' && '是' || '否' }}"
+      
       - name: 运行DUSKUSDT监控
         env:
+          # Telegram 配置
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          TRADE_SYMBOL: ${{ secrets.TRADE_SYM }}
-          RUN_MODE: ${{ github.event_name == 'schedule' && 'single' || inputs.run_mode }}
-          DEBUG_MODE: ${{ github.event_name == 'schedule' && 'false' || inputs.debug_mode }}
+          
+          # 交易对配置 - 尝试多种可能的Secret名称
+          # 使用逻辑：如果TRADE_SYMBOL存在就使用，否则使用TRADE_SYM，否则使用默认值
+          TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL || secrets.TRADE_SYM || 'DUSKUSDT' }}
+          
+          # 调试模式
+          DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
           PYTHONUNBUFFERED: '1'
         run: |
           echo "=== DUSKUSDT加密货币监控 ==="
           echo "开始时间: $(date)"
           echo "触发方式: ${{ github.event_name }}"
-          echo "运行模式: $RUN_MODE"
           echo "调试模式: $DEBUG_MODE"
-          echo "交易对: $TRADE_SYMBOL"
           echo ""
           
-          # 验证环境变量
-          if [ -z "$TG_TOKEN" ]; then
-            echo "❌ 错误: TG_TOKEN 未设置"
-            exit 1
-          fi
-          
-          if [ -z "$TG_CHAT_ID" ]; then
-            echo "❌ 错误: TG_CHAT_ID 未设置"
-            exit 1
-          fi
-          
-          if [ -z "$TRADE_SYMBOL" ]; then
-            echo "❌ 错误: TRADE_SYMBOL 未设置"
-            exit 1
-          fi
-          
-          echo "✅ 环境变量检查通过"
-          
-          # 根据运行模式执行
-          if [ "$RUN_MODE" = "continuous" ]; then
-            echo "⚠️ 注意: 连续模式将运行2个循环（避免超时）"
-            for i in 1 2; do
-              echo ""
-              echo "--- 循环 $i ---"
-              python dusk_monitor.py
-              
-              # 如果不是最后一次，等待一段时间
-              if [ $i -lt 2 ]; then
-                echo "等待30秒..."
-                sleep 30
-              fi
-            done
+          echo "=== 环境变量检查 ==="
+          # 检查TG_TOKEN
+          if [ -n "$TG_TOKEN" ]; then
+            echo "✅ TG_TOKEN: 已设置 (长度: ${#TG_TOKEN})"
           else
-            echo "执行单次监控..."
-            python dusk_monitor.py
+            echo "❌ TG_TOKEN: 未设置"
+            exit 1
+          fi
+          
+          # 检查TG_CHAT_ID
+          if [ -n "$TG_CHAT_ID" ]; then
+            echo "✅ TG_CHAT_ID: $TG_CHAT_ID"
+          else
+            echo "❌ TG_CHAT_ID: 未设置"
+            exit 1
+          fi
+          
+          # 检查TRADE_SYMBOL
+          if [ -n "$TRADE_SYMBOL" ]; then
+            echo "✅ TRADE_SYMBOL: $TRADE_SYMBOL"
+          else
+            echo "❌ TRADE_SYMBOL: 未设置"
+            exit 1
           fi
           
           echo ""
-          echo "✅ 监控执行完成"
+          echo "=== 运行监控脚本 ==="
+          
+          # 验证脚本文件
+          if [ ! -f "dusk_monitor.py" ]; then
+            echo "❌ 错误: 找不到 dusk_monitor.py"
+            echo "当前目录文件:"
+            ls -la
+            exit 1
+          fi
+          
+          # 运行监控脚本
+          python dusk_monitor.py
+          
+          EXIT_CODE=$?
+          echo ""
+          echo "=== 执行结果 ==="
+          echo "脚本退出代码: $EXIT_CODE"
           echo "结束时间: $(date)"
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ 监控执行成功"
+          else
+            echo "❌ 监控执行失败"
+            exit $EXIT_CODE
+          fi
       
       - name: 错误处理
         if: failure()
         run: |
           echo "❌ 监控任务失败"
           echo ""
-          echo "建议:"
+          echo "常见问题:"
           echo "1. 检查 dusk_monitor.py 脚本是否有语法错误"
           echo "2. 确认所有必要的Python库都已安装"
           echo "3. 检查环境变量是否正确设置"
