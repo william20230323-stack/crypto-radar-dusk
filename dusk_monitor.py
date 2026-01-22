@@ -6,6 +6,7 @@ import requests
 from datetime import datetime, timedelta
 import random
 import traceback
+import math
 
 # 從環境變數讀取設定
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -20,7 +21,7 @@ if not TG_TOKEN or not TG_CHAT_ID:
 print(f"✅ 開始實時監控 {SYMBOL} 1分鐘K線...")
 
 # 監控設定
-CHECK_INTERVAL = 15  # 檢查間隔（秒）
+CHECK_INTERVAL = 60  # 檢查間隔（秒）- 改為60秒，對齊每分鐘
 ALERT_COOLDOWN = 60  # 警報冷卻時間（秒）
 REQUEST_DELAY = 2.0  # API請求間隔（秒）
 MAX_RETRIES = 3
@@ -117,7 +118,7 @@ class BinanceAPI:
             )
             
             self.request_count += 1
-            self.last_request_time = time.time()
+            self.last_request_time = current_time
             
             # 處理429錯誤（請求過多）
             if response.status_code == 429:
@@ -443,7 +444,7 @@ def print_banner():
     print("=" * 70)
     print(f"📊 交易對: {SYMBOL}")
     print(f"⏰ 時間框架: 1分鐘K線")
-    print(f"🔄 檢查間隔: {CHECK_INTERVAL}秒")
+    print(f"🔄 檢查間隔: 每分鐘00秒整點執行")
     print(f"🔔 通知模式: 僅異常時發送")
     print(f"⏱️  警報冷卻: {ALERT_COOLDOWN}秒")
     print(f"🌐 API類型: 自動選擇（美國版/國際版）")
@@ -453,6 +454,32 @@ def print_banner():
     print(f"   成交量比率: >{VOLUME_THRESHOLD:.1f}")
     print(f"   價格變化: >{PRICE_CHANGE_THRESHOLD:.1f}%")
     print("=" * 70)
+
+def wait_until_next_minute():
+    """等待到下一個分鐘的00秒"""
+    now = datetime.now()
+    current_second = now.second
+    current_microsecond = now.microsecond
+    
+    # 計算到下一分鐘00秒需要等待的時間
+    seconds_to_wait = 60 - current_second
+    
+    # 如果現在就是00秒（或非常接近），則直接返回
+    if seconds_to_wait <= 1:
+        if seconds_to_wait > 0:
+            # 微調，確保在00秒時執行
+            time.sleep(seconds_to_wait)
+        return
+    
+    # 顯示等待信息
+    next_minute_time = (now + timedelta(seconds=seconds_to_wait)).strftime("%H:%M:%S")
+    print(f"⏳ 等待 {seconds_to_wait} 秒直到下一分鐘整點 ({next_minute_time})...")
+    
+    # 等待到下一個分鐘的00秒
+    time.sleep(seconds_to_wait)
+    
+    # 微調，確保精確對齊
+    time.sleep(0.01)  # 10毫秒微調
 
 def real_time_monitor():
     """實時監控主函數"""
@@ -483,7 +510,7 @@ def real_time_monitor():
 ✅ 系統已啟動並開始實時監控
 📊 交易對: {SYMBOL}
 ⏰ 時間框架: 1分鐘K線
-🔄 檢查間隔: {CHECK_INTERVAL}秒
+🔄 檢查間隔: 每分鐘00秒整點執行
 🔔 通知模式: 僅異常時發送
 ⏱️  警報冷卻: {ALERT_COOLDOWN}秒
 🌐 API類型: {api.api_type}
@@ -503,13 +530,17 @@ def real_time_monitor():
     alert_count = 0
     error_count = 0
     
+    # 第一次執行前等待到下一分鐘整點
+    print("\n⏳ 首次執行，等待到下一個分鐘的00秒...")
+    wait_until_next_minute()
+    
     # 主監控循環
     try:
         while True:
             check_count += 1
             current_time_str = datetime.now().strftime("%H:%M:%S")
             
-            print(f"\n🔄 檢查 #{check_count} - {current_time_str}")
+            print(f"\n🔄 檢查 #{check_count} - {current_time_str} (整點執行)")
             
             # 分析單根K線
             market_data = analyze_single_kline(api)
@@ -550,12 +581,12 @@ def real_time_monitor():
                 print(f"   錯誤次數: {error_count}")
                 success_rate = ((check_count - error_count) / check_count * 100) if check_count > 0 else 0
                 print(f"   成功率: {success_rate:.1f}%")
-                print(f"   運行時間: {timedelta(seconds=check_count * CHECK_INTERVAL)}")
+                print(f"   運行時間: {timedelta(seconds=check_count * 60)}")
                 print(f"   API類型: {api.api_type}")
             
-            # 等待下一次檢查
-            print(f"⏳ 等待 {CHECK_INTERVAL} 秒後繼續...")
-            time.sleep(CHECK_INTERVAL)
+            # 等待到下一個分鐘的00秒
+            print(f"⏳ 等待到下一個分鐘的00秒...")
+            wait_until_next_minute()
             
     except KeyboardInterrupt:
         print("\n\n⏹️  監控手動停止")
@@ -587,7 +618,7 @@ def real_time_monitor():
 ✅ 監控任務已完成
 📊 總檢查次數: {check_count}
 🚨 總警報次數: {alert_count}
-⏰ 運行時間: {timedelta(seconds=check_count * CHECK_INTERVAL)}
+⏰ 運行時間: {timedelta(seconds=check_count * 60)}
 
 🕐 停止時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -613,7 +644,8 @@ def main():
             else:
                 restarts += 1
                 print(f"🔄 嘗試重啟 ({restarts}/{max_restarts})...")
-                time.sleep(10)
+                # 重啟時也等待到整點
+                wait_until_next_minute()
         except Exception as e:
             print(f"❌ 系統嚴重錯誤: {type(e).__name__}: {e}")
             restarts += 1
