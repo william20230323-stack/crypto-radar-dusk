@@ -1,32 +1,76 @@
 name: DUSKUSDT 1-Minute Monitor
 
 on:
+  # 定时触发器 - 每1分钟运行一次
   schedule:
-    - cron: '*/2 * * * *'  # 每2分鐘執行一次
-  workflow_dispatch:       # 允許手動觸發
+    - cron: '*/1 * * * *'
+  
+  # 允许手动触发
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+        type: boolean
+
+# ========== 关键修正：并发控制 ==========
+concurrency:
+  # 为同一个工作流创建一个组，确保同一时间只有一个实例运行
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # 当有新的运行启动时，取消所有正在进行的旧运行
+  cancel-in-progress: true
+# =======================================
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     
+    # 设置超时时间，避免任务无限期运行
+    timeout-minutes: 10
+    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Run DUSK Monitor
-      env:
-        TG_TOKEN: ${{ secrets.TG_TOKEN }}
-        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      run: |
-        echo "🚀 啟動 DUSKUSDT 監控系統..."
-        python dusk_monitor.py
+      # 步骤1: 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      
+      # 步骤2: 设置Python环境
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      # 步骤3: 安装依赖
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      # 步骤4: 运行监控脚本
+      - name: Run DUSKUSDT Monitor
+        env:
+          DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
+          API_KEY: ${{ secrets.API_KEY }}
+          API_SECRET: ${{ secrets.API_SECRET }}
+        run: |
+          echo "Starting DUSKUSDT 1-Minute Monitor..."
+          echo "Debug Mode: $DEBUG_MODE"
+          echo "Timestamp: $(date)"
+          
+          # 运行您的监控脚本，替换为实际脚本名称
+          python scripts/dusk_monitor.py \
+            --interval 1m \
+            --debug $DEBUG_MODE
+          
+          echo "Monitor completed at $(date)"
+      
+      # 步骤5: 错误处理（可选）
+      - name: Handle Failure
+        if: failure()
+        run: |
+          echo "Monitor job failed!"
+          echo "Check logs for details."
+          # 可以添加错误通知逻辑，如发送邮件或Slack消息
