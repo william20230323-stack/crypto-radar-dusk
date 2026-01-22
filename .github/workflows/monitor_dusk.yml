@@ -1,11 +1,8 @@
 name: DUSKUSDT 1-Minute Monitor
 
 on:
-  # 定时触发器 - 每1分钟运行一次
   schedule:
     - cron: '*/1 * * * *'
-  
-  # 允许手动触发
   workflow_dispatch:
     inputs:
       debug_mode:
@@ -14,17 +11,13 @@ on:
         default: 'false'
         type: boolean
 
-# ========== 并发控制 ==========
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-# =============================
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    
-    # 设置超时时间（防止任务卡死）
     timeout-minutes: 3
     
     steps:
@@ -56,7 +49,7 @@ jobs:
           
           # 安装常用库
           echo "安装常用库..."
-          pip install requests python-dotenv schedule pandas
+          pip install requests python-dotenv schedule pandas ccxt
       
       # 步骤4: 运行监控脚本（关键步骤）
       - name: Run DUSKUSDT Monitor
@@ -64,18 +57,12 @@ jobs:
           DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
           
           # ============================================
-          # 设置环境变量（对应您的GitHub Secrets）
+          # 设置环境变量（必须与脚本中的变量名一致）
           # ============================================
-          # Telegram配置
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TG_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          
-          # 交易对配置
+          # 脚本期望的变量名
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TRADE_SYMBOL: ${{ secrets.TRADE_SYM }}
-          
-          # 如果需要Binance API密钥，添加这里
-          # BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-          # BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           
           # 其他可能需要的环境变量
           PYTHONUNBUFFERED: '1'  # 确保实时输出日志
@@ -99,28 +86,35 @@ jobs:
           
           # 验证环境变量设置（不显示敏感信息）
           echo "🔧 环境变量检查:"
-          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "✅ TELEGRAM_BOT_TOKEN: 已设置"
+          
+          if [ -n "$TG_TOKEN" ]; then
+            echo "✅ TG_TOKEN: 已设置 (长度: ${#TG_TOKEN} 字符)"
           else
-            echo "⚠️ TELEGRAM_BOT_TOKEN: 未设置"
+            echo "❌ TG_TOKEN: 未设置"
           fi
           
-          if [ -n "$TELEGRAM_CHAT_ID" ]; then
-            echo "✅ TELEGRAM_CHAT_ID: 已设置"
+          if [ -n "$TG_CHAT_ID" ]; then
+            echo "✅ TG_CHAT_ID: 已设置 (值: $TG_CHAT_ID)"
           else
-            echo "⚠️ TELEGRAM_CHAT_ID: 未设置"
+            echo "❌ TG_CHAT_ID: 未设置"
           fi
           
           if [ -n "$TRADE_SYMBOL" ]; then
             echo "✅ TRADE_SYMBOL: $TRADE_SYMBOL"
           else
-            echo "⚠️ TRADE_SYMBOL: 未设置"
+            echo "❌ TRADE_SYMBOL: 未设置"
+            echo "💡 提示: 检查GitHub Secrets中是否有 TRADE_SYM"
           fi
           echo ""
           
           # 显示Python版本
           echo "🐍 Python版本:"
           python --version
+          echo ""
+          
+          # 检查脚本中实际使用的变量
+          echo "🔍 检查脚本中的环境变量引用..."
+          grep -n "os\.getenv\|os\.environ" dusk_monitor.py | head -10
           echo ""
           
           # 运行监控脚本
@@ -139,6 +133,11 @@ jobs:
             echo "✅ 脚本执行成功"
           else
             echo "❌ 脚本执行失败"
+            echo ""
+            echo "💡 调试建议:"
+            echo "1. 检查脚本中环境变量的使用方式"
+            echo "2. 确认脚本是否需要其他环境变量"
+            echo "3. 尝试本地运行: python dusk_monitor.py"
           fi
           
           echo "⏰ 结束时间: $(date)"
@@ -149,13 +148,12 @@ jobs:
         run: |
           echo "❌ 监控任务失败!"
           echo ""
-          echo "常见问题排查:"
-          echo "1. 检查 dusk_monitor.py 是否有语法错误"
-          echo "2. 确认所有必要的Python库都已安装"
-          echo "3. 检查环境变量是否正确设置"
-          echo "4. 查看脚本是否需要Binance API密钥"
+          echo "请检查以下项目:"
+          echo "1. 确认GitHub Secrets中的值正确:"
+          echo "   - TG_TOKEN: Telegram机器人令牌"
+          echo "   - TG_CHAT_ID: Telegram聊天ID"
+          echo "   - TRADE_SYM: 交易对符号（如 DUSKUSDT）"
           echo ""
-          echo "💡 建议:"
-          echo "- 手动运行 python dusk_monitor.py 测试本地环境"
-          echo "- 检查 requirements.txt 是否包含所有必要依赖"
-          echo "- 确认GitHub Secrets中的值正确无误"
+          echo "2. 检查脚本中如何读取环境变量:"
+          echo "   应该使用: os.getenv('TG_TOKEN')"
+          echo "   而不是: os.getenv('TELEGRAM_BOT_TOKEN')"
