@@ -5,11 +5,11 @@ on:
   schedule:
     - cron: '*/1 * * * *'
   
-  # 手动触发 - 提供两种模式选择
+  # 手动触发 - 提供清晰的启动选项
   workflow_dispatch:
     inputs:
       run_mode:
-        description: '运行模式选择'
+        description: '运行模式'
         required: true
         default: 'single'
         type: choice
@@ -17,12 +17,12 @@ on:
           - single
           - continuous
       debug_mode:
-        description: '开启调试模式'
+        description: '调试模式'
         required: false
         default: 'false'
         type: boolean
 
-# 并发控制：使用工作流名称和分支作为组，防止同一分支同时运行多个实例
+# 并发控制
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -30,52 +30,36 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 2  # 单次检查应在2分钟内完成
+    timeout-minutes: 2
     
     steps:
-      # 步骤1: 检出代码
-      - name: Checkout repository
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
       
-      # 步骤2: 设置Python环境
-      - name: Set up Python
+      - name: 设置Python环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       
-      # 步骤3: 安装依赖
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          
-          # 安装基础依赖
           pip install requests python-dotenv pandas ccxt python-telegram-bot schedule
-          
-          # 安装项目特定依赖
-          if [ -f requirements.txt ]; then
-            echo "安装 requirements.txt 中的依赖..."
-            pip install -r requirements.txt
-          else
-            echo "未找到 requirements.txt"
-          fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       
-      # 步骤4: 运行DUSKUSDT监控
-      - name: Run DUSKUSDT Monitor
+      - name: 运行DUSKUSDT监控
         env:
-          # 脚本所需环境变量
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TRADE_SYMBOL: ${{ secrets.TRADE_SYM }}
-          
-          # 运行模式控制
           RUN_MODE: ${{ github.event_name == 'schedule' && 'single' || inputs.run_mode }}
           DEBUG_MODE: ${{ github.event_name == 'schedule' && 'false' || inputs.debug_mode }}
           PYTHONUNBUFFERED: '1'
         run: |
-          echo "=== DUSKUSDT 加密货币监控系统 ==="
+          echo "=== DUSKUSDT加密货币监控 ==="
           echo "开始时间: $(date)"
           echo "触发方式: ${{ github.event_name }}"
           echo "运行模式: $RUN_MODE"
@@ -83,108 +67,61 @@ jobs:
           echo "交易对: $TRADE_SYMBOL"
           echo ""
           
-          # 根据运行模式确定循环次数
-          if [ "$RUN_MODE" = "continuous" ]; then
-            echo "⚠️ 注意: 持续模式将在1分钟后自动结束，避免GitHub Actions超时"
-            echo "将执行单次检查后退出（避免超时）"
-            MAX_CYCLES=1
-          else
-            MAX_CYCLES=1
+          # 验证环境变量
+          if [ -z "$TG_TOKEN" ]; then
+            echo "❌ 错误: TG_TOKEN 未设置"
+            exit 1
           fi
           
-          # 创建Python包装器脚本
-          cat > run_dusk_monitor.py << 'EOF'
-import os
-import time
-import subprocess
-import sys
-
-def run_single_check():
-    """执行单次监控检查"""
-    print(f"执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 50)
-    
-    # 运行原始监控脚本
-    result = subprocess.run(
-        [sys.executable, "dusk_monitor.py"],
-        capture_output=True,
-        text=True,
-        encoding='utf-8'
-    )
-    
-    # 输出结果
-    if result.stdout:
-        print(result.stdout)
-    
-    if result.stderr:
-        print("错误信息:", result.stderr)
-    
-    print("=" * 50)
-    return result.returncode
-
-def main():
-    """主函数"""
-    try:
-        # 执行监控检查
-        exit_code = run_single_check()
-        
-        if exit_code == 0:
-            print("✅ 监控检查完成")
-        else:
-            print(f"❌ 监控检查失败，退出码: {exit_code}")
-        
-        return exit_code
-        
-    except KeyboardInterrupt:
-        print("\n监控被用户中断")
-        return 130
-    except Exception as e:
-        print(f"\n监控发生错误: {str(e)}")
-        return 1
-
-if __name__ == "__main__":
-    sys.exit(main())
-EOF
+          if [ -z "$TG_CHAT_ID" ]; then
+            echo "❌ 错误: TG_CHAT_ID 未设置"
+            exit 1
+          fi
           
-          echo "执行监控脚本..."
-          python run_dusk_monitor.py
+          if [ -z "$TRADE_SYMBOL" ]; then
+            echo "❌ 错误: TRADE_SYMBOL 未设置"
+            exit 1
+          fi
           
-          EXIT_CODE=$?
+          echo "✅ 环境变量检查通过"
+          
+          # 根据运行模式执行
+          if [ "$RUN_MODE" = "continuous" ]; then
+            echo "⚠️ 注意: 连续模式将运行2个循环（避免超时）"
+            for i in 1 2; do
+              echo ""
+              echo "--- 循环 $i ---"
+              python dusk_monitor.py
+              
+              # 如果不是最后一次，等待一段时间
+              if [ $i -lt 2 ]; then
+                echo "等待30秒..."
+                sleep 30
+              fi
+            done
+          else
+            echo "执行单次监控..."
+            python dusk_monitor.py
+          fi
           
           echo ""
-          echo "=== 执行结果 ==="
-          echo "退出代码: $EXIT_CODE"
+          echo "✅ 监控执行完成"
           echo "结束时间: $(date)"
-          
-          # 根据退出代码决定是否失败
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ 监控执行失败"
-            exit $EXIT_CODE
-          else
-            echo "✅ 监控执行成功"
-          fi
       
-      # 步骤5: 错误处理
-      - name: Handle Failure
+      - name: 错误处理
         if: failure()
         run: |
           echo "❌ 监控任务失败"
           echo ""
-          echo "常见问题排查:"
+          echo "建议:"
           echo "1. 检查 dusk_monitor.py 脚本是否有语法错误"
           echo "2. 确认所有必要的Python库都已安装"
           echo "3. 检查环境变量是否正确设置"
-          echo "4. 查看上方详细错误信息"
-          echo ""
-          echo "💡 调试建议:"
-          echo "- 手动运行: python dusk_monitor.py"
-          echo "- 检查 requirements.txt 文件"
-          echo "- 确认GitHub Secrets中的值正确无误"
+          echo "4. 尝试本地运行: python dusk_monitor.py"
       
-      # 步骤6: 成功通知
-      - name: Success Notification
+      - name: 成功通知
         if: success()
         run: |
           echo "✅ 监控任务执行成功"
           echo "🔄 下次自动运行: 1分钟后"
-          echo "📊 运行历史可在GitHub Actions页面查看"
+          echo "📊 运行ID: ${{ github.run_id }}"
