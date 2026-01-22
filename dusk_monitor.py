@@ -5,7 +5,7 @@ import time
 import requests
 from datetime import datetime, timedelta
 import random
-from typing import Dict, Optional, Tuple, List
+import traceback
 
 # 從環境變數讀取設定
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -26,23 +26,27 @@ REQUEST_DELAY = 2.0  # API請求間隔（秒）
 MAX_RETRIES = 3
 API_TIMEOUT = 10
 
-# 警報條件閾值（可調整）
-VOLUME_THRESHOLD = 1.8  # 成交量閾值（相對於前一根）
+# 警報條件閾值
+VOLUME_THRESHOLD = 1.8  # 成交量閾值
 BUY_SELL_THRESHOLD = 1.8  # 買賣比率閾值
 PRICE_CHANGE_THRESHOLD = 1.0  # 價格變化閾值（%）
 
 # 狀態追蹤
-last_alert_time = {"BUY_IN_RED": 0, "SELL_IN_GREEN": 0}
-last_processed_kline_time = 0  # 只記錄最後一根處理的K線時間
+last_alert_time = {"BUY_IN_RED": 0, "SELL_IN_GREEN": 0, "VOLUME_SPIKE": 0}
+last_processed_kline_time = 0
 
-class BinanceUSAPI:
-    """美國幣安API客戶端"""
+class BinanceAPI:
+    """幣安API客戶端（支援國際版和美國版）"""
     def __init__(self):
-        # 美國幣安API端點
+        # 多個API端點，優先嘗試美國版，再嘗試國際版
         self.base_urls = [
-            "https://api.binance.us/api/v3",
+            "https://api.binance.us/api/v3",  # 美國版
             "https://api1.binance.us/api/v3",
             "https://api2.binance.us/api/v3",
+            "https://api.binance.com/api/v3",  # 國際版（備用）
+            "https://api1.binance.com/api/v3",
+            "https://api2.binance.com/api/v3",
+            "https://api3.binance.com/api/v3",
         ]
         self.current_base = 0
         self.session = requests.Session()
@@ -50,17 +54,22 @@ class BinanceUSAPI:
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Origin": "https://www.binance.us",
-            "Referer": "https://www.binance.us/"
+            "X-MBX-APIKEY": ""
         })
         self.last_request_time = 0
         self.request_count = 0
         self.reset_time = time.time()
+        self.api_type = "未知"  # 用於標記當前使用的API類型
     
     def rotate_base_url(self):
         """輪換API端點"""
         self.current_base = (self.current_base + 1) % len(self.base_urls)
-        print(f"🔄 輪換到API端點 {self.current_base + 1}/{len(self.base_urls)}")
+        url = self.base_urls[self.current_base]
+        if "binance.us" in url:
+            self.api_type = "美國版"
+        else:
+            self.api_type = "國際版"
+        print(f"🔄 輪換到 {self.api_type} API端點 ({self.current_base + 1}/{len(self.base_urls)})")
     
     def check_rate_limit(self):
         """檢查並實施速率限制"""
@@ -71,7 +80,7 @@ class BinanceUSAPI:
             self.request_count = 0
             self.reset_time = current_time
         
-        # Binance.US 限制：每分鐘1200次請求
+        # 速率限制：每分鐘1200次請求
         if self.request_count >= 1000:
             wait_time = 60 - (current_time - self.reset_time)
             if wait_time > 0:
@@ -80,7 +89,7 @@ class BinanceUSAPI:
                 self.reset_time = time.time()
                 self.request_count = 0
     
-    def make_request(self, endpoint: str, params: Dict = None, retry: int = 0) -> Optional[Dict]:
+    def make_request(self, endpoint: str, params: dict = None, retry: int = 0):
         """發送API請求"""
         # 速率控制和延遲
         current_time = time.time()
@@ -95,10 +104,14 @@ class BinanceUSAPI:
         url = f"{self.base_urls[self.current_base]}/{endpoint}"
         
         try:
-            print(f"📡 請求 {endpoint}...")
+            print(f"📡 請求 {endpoint} (API: {self.api_type})...")
+            
+            # 根據API類型調整參數
+            request_params = params.copy() if params else {}
+            
             response = self.session.get(
                 url, 
-                params=params, 
+                params=request_params, 
                 timeout=API_TIMEOUT,
                 verify=True
             )
@@ -106,7 +119,7 @@ class BinanceUSAPI:
             self.request_count += 1
             self.last_request_time = time.time()
             
-            # 處理429錯誤
+            # 處理429錯誤（請求過多）
             if response.status_code == 429:
                 print(f"⚠️ 請求限制 (429)，輪換API端點...")
                 self.rotate_base_url()
@@ -118,9 +131,9 @@ class BinanceUSAPI:
                     return self.make_request(endpoint, params, retry + 1)
                 return None
             
-            # 處理451錯誤
-            if response.status_code == 451:
-                print(f"❌ 地理限制 (451)，嘗試其他端點...")
+            # 處理403/451錯誤（地理限制）
+            if response.status_code in [403, 451]:
+                print(f"❌ 地理限制 ({response.status_code})，嘗試其他端點...")
                 self.rotate_base_url()
                 
                 if retry < MAX_RETRIES:
@@ -130,8 +143,9 @@ class BinanceUSAPI:
                     return self.make_request(endpoint, params, retry + 1)
                 return None
             
+            # 處理其他錯誤狀態碼
             if response.status_code != 200:
-                print(f"⚠️ API返回狀態碼 {response.status_code}")
+                print(f"⚠️ API返回狀態碼 {response.status_code}: {response.text[:200]}")
                 
                 if retry < MAX_RETRIES:
                     wait_time = 2 ** retry + random.uniform(0.5, 1.5)
@@ -145,7 +159,7 @@ class BinanceUSAPI:
             return response.json()
             
         except requests.exceptions.RequestException as e:
-            print(f"❌ API請求失敗: {e}")
+            print(f"❌ API請求失敗: {type(e).__name__}: {e}")
             
             if retry < MAX_RETRIES:
                 wait_time = 2 ** retry + random.uniform(1, 3)
@@ -156,7 +170,7 @@ class BinanceUSAPI:
             
             return None
     
-    def get_latest_kline(self, symbol: str, interval: str = "1m") -> Optional[Dict]:
+    def get_latest_kline(self, symbol: str, interval: str = "1m"):
         """獲取最新一根完整K線數據"""
         print(f"🔍 獲取 {symbol} 最新K線數據...")
         
@@ -173,7 +187,7 @@ class BinanceUSAPI:
                 k = data[-1]
                 kline_time = k[0]
                 
-                # 獲取前一根K線用於比較（如果有的話）
+                # 獲取前一根K線用於比較
                 prev_k = data[-2] if len(data) >= 2 else k
                 
                 kline_data = {
@@ -194,29 +208,33 @@ class BinanceUSAPI:
                     "volume": float(prev_k[5])
                 }
                 
-                print(f"✅ 成功獲取K線數據 (時間: {datetime.fromtimestamp(kline_time/1000).strftime('%H:%M:%S')})")
+                kline_time_str = datetime.fromtimestamp(kline_time/1000).strftime('%H:%M:%S')
+                print(f"✅ 成功獲取K線數據 (時間: {kline_time_str}, API: {self.api_type})")
                 return {
                     "current": kline_data,
                     "previous": prev_kline_data
                 }
             
+            print("❌ 獲取的K線數據格式不正確")
             return None
             
         except Exception as e:
-            print(f"❌ 獲取K線數據時發生錯誤: {e}")
+            print(f"❌ 獲取K線數據時發生錯誤: {type(e).__name__}: {e}")
             return None
     
     def check_symbol_availability(self, symbol: str) -> bool:
         """檢查交易對是否可用"""
         try:
-            print(f"🔍 檢查交易對 {symbol} 在 Binance.US 的可用性...")
+            print(f"🔍 檢查交易對 {symbol} 可用性...")
+            
+            # 嘗試獲取價格信息
             ticker = self.make_request("ticker/price", {"symbol": symbol})
             
             if ticker and "price" in ticker:
-                print(f"✅ 交易對 {symbol} 在 Binance.US 可用")
+                print(f"✅ 交易對 {symbol} 在 {self.api_type} 可用")
                 return True
             
-            print(f"❌ 交易對 {symbol} 在 Binance.US 不可用")
+            print(f"❌ 交易對 {symbol} 在 {self.api_type} 不可用")
             return False
             
         except Exception as e:
@@ -234,20 +252,20 @@ def send_telegram(message: str) -> bool:
             "disable_web_page_preview": True
         }
         
-        time.sleep(0.3)
+        time.sleep(0.3)  # 避免Telegram API限制
         response = requests.post(url, json=payload, timeout=API_TIMEOUT)
         
         if response.status_code == 200:
             return True
         else:
-            print(f"❌ Telegram 返回狀態碼 {response.status_code}: {response.text}")
+            print(f"❌ Telegram 返回狀態碼 {response.status_code}: {response.text[:200]}")
             return False
         
     except Exception as e:
-        print(f"❌ Telegram 錯誤: {e}")
+        print(f"❌ Telegram 錯誤: {type(e).__name__}: {e}")
         return False
 
-def analyze_single_kline(api: BinanceUSAPI) -> Optional[Dict]:
+def analyze_single_kline(api: BinanceAPI):
     """分析單根K線"""
     global last_processed_kline_time
     
@@ -263,9 +281,17 @@ def analyze_single_kline(api: BinanceUSAPI) -> Optional[Dict]:
     kline_time = current_kline["time"]
     kline_time_str = datetime.fromtimestamp(kline_time/1000).strftime("%H:%M:%S")
     
+    # 調試信息
+    current_timestamp = int(time.time() * 1000)
+    print(f"[DEBUG] 當前時間戳: {current_timestamp}")
+    print(f"[DEBUG] K線時間戳: {kline_time}")
+    print(f"[DEBUG] 最後處理時間: {last_processed_kline_time}")
+    print(f"[DEBUG] 時間差: {current_timestamp - kline_time}ms")
+    
     # 檢查是否已經處理過這根K線
-    if kline_time == last_processed_kline_time:
-        print(f"⏭️  K線 {kline_time_str} 已處理，跳過")
+    # 只跳過完全相同的K線時間，但允許處理新的K線
+    if kline_time <= last_processed_kline_time:
+        print(f"⏭️  K線 {kline_time_str} 已處理或過時，跳過")
         return None
     
     # 更新最後處理的K線時間
@@ -329,7 +355,7 @@ def analyze_single_kline(api: BinanceUSAPI) -> Optional[Dict]:
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }
 
-def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
+def check_alert_conditions(market_data: dict):
     """檢查警報條件"""
     
     current_time = market_data["timestamp"]
@@ -351,7 +377,7 @@ def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
 
 ⏰ <b>K線時間:</b> {kline_time_str}
 📡 <b>警報時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance.US API
+🔗 <b>數據來源:</b> Binance API
 """
         return True, "BUY_IN_RED", message
     
@@ -371,11 +397,11 @@ def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
 
 ⏰ <b>K線時間:</b> {kline_time_str}
 📡 <b>警報時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance.US API
+🔗 <b>數據來源:</b> Binance API
 """
         return True, "SELL_IN_GREEN", message
     
-    # 情況3: 成交量異常放大（無論陰陽）
+    # 情況3: 成交量異常放大
     elif market_data["volume_ratio"] > VOLUME_THRESHOLD and abs(market_data["price_change"]) > PRICE_CHANGE_THRESHOLD:
         kline_type = "陰線" if market_data["is_red"] else "陽線"
         change_direction = "下跌" if market_data["price_change"] < 0 else "上漲"
@@ -391,7 +417,7 @@ def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
 
 ⏰ <b>K線時間:</b> {kline_time_str}
 📡 <b>警報時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance.US API
+🔗 <b>數據來源:</b> Binance API
 """
         return True, "VOLUME_SPIKE", message
     
@@ -403,14 +429,15 @@ def can_send_alert(alert_type: str) -> bool:
     last_time = last_alert_time.get(alert_type, 0)
     
     if current_time - last_time < ALERT_COOLDOWN:
-        print(f"⏳ {alert_type} 警報在冷卻中，跳過...")
+        remaining = ALERT_COOLDOWN - (current_time - last_time)
+        print(f"⏳ {alert_type} 警報在冷卻中，還需 {remaining:.0f}秒，跳過...")
         return False
     
     last_alert_time[alert_type] = current_time
     return True
 
-def real_time_monitor():
-    """實時監控主函數"""
+def print_banner():
+    """顯示啟動橫幅"""
     print("=" * 70)
     print("🚀 DUSK/USDT 單K線實時監控系統")
     print("=" * 70)
@@ -419,16 +446,20 @@ def real_time_monitor():
     print(f"🔄 檢查間隔: {CHECK_INTERVAL}秒")
     print(f"🔔 通知模式: 僅異常時發送")
     print(f"⏱️  警報冷卻: {ALERT_COOLDOWN}秒")
-    print(f"🌐 API端點: Binance.US")
+    print(f"🌐 API類型: 自動選擇（美國版/國際版）")
     print("=" * 70)
     print(f"📈 警報閾值設定:")
     print(f"   買賣比率: >{BUY_SELL_THRESHOLD:.1f}")
     print(f"   成交量比率: >{VOLUME_THRESHOLD:.1f}")
     print(f"   價格變化: >{PRICE_CHANGE_THRESHOLD:.1f}%")
     print("=" * 70)
+
+def real_time_monitor():
+    """實時監控主函數"""
+    print_banner()
     
     # 初始化API
-    api = BinanceUSAPI()
+    api = BinanceAPI()
     
     # 檢查交易對可用性
     print("🔍 檢查交易對可用性...")
@@ -436,8 +467,8 @@ def real_time_monitor():
         error_msg = f"""
 ❌ <b>{SYMBOL} 監控系統啟動失敗</b>
 
-交易對 {SYMBOL} 在 Binance.US 不可用。
-請確認該交易對在美國幣安是否存在。
+交易對 {SYMBOL} 在當前可用的 API 端點不可用。
+請確認該交易對在幣安是否存在。
 
 🕐 時間: {datetime.now().strftime('%H:%M:%S')}
 """
@@ -455,6 +486,7 @@ def real_time_monitor():
 🔄 檢查間隔: {CHECK_INTERVAL}秒
 🔔 通知模式: 僅異常時發送
 ⏱️  警報冷卻: {ALERT_COOLDOWN}秒
+🌐 API類型: {api.api_type}
 
 📈 <b>警報條件:</b>
 1. 陰線但大量買入（買/賣比 > {BUY_SELL_THRESHOLD}）
@@ -519,6 +551,7 @@ def real_time_monitor():
                 success_rate = ((check_count - error_count) / check_count * 100) if check_count > 0 else 0
                 print(f"   成功率: {success_rate:.1f}%")
                 print(f"   運行時間: {timedelta(seconds=check_count * CHECK_INTERVAL)}")
+                print(f"   API類型: {api.api_type}")
             
             # 等待下一次檢查
             print(f"⏳ 等待 {CHECK_INTERVAL} 秒後繼續...")
@@ -527,8 +560,7 @@ def real_time_monitor():
     except KeyboardInterrupt:
         print("\n\n⏹️  監控手動停止")
     except Exception as e:
-        print(f"\n❌ 監控錯誤: {e}")
-        import traceback
+        print(f"\n❌ 監控錯誤: {type(e).__name__}: {e}")
         traceback.print_exc()
         
         # 發送錯誤通知
@@ -583,7 +615,7 @@ def main():
                 print(f"🔄 嘗試重啟 ({restarts}/{max_restarts})...")
                 time.sleep(10)
         except Exception as e:
-            print(f"❌ 系統嚴重錯誤: {e}")
+            print(f"❌ 系統嚴重錯誤: {type(e).__name__}: {e}")
             restarts += 1
             if restarts < max_restarts:
                 print(f"🔄 等待後重啟 ({restarts}/{max_restarts})...")
