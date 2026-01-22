@@ -1,21 +1,15 @@
 name: DUSKUSDT Minute Monitor
 
 on:
-  # 使用push触发作为测试，schedule作为正式运行
-  push:
-    branches: [ main ]
-    paths:
-      - 'dusk_monitor.py'
-      - '.github/workflows/monitor_dusk.yml'
-  
+  # 定时触发 - 每分钟一次
   schedule:
-    # 每分钟触发，但脚本只执行一次检查
     - cron: '*/1 * * * *'
   
+  # 手动触发 - 提供两种模式选择
   workflow_dispatch:
     inputs:
       run_mode:
-        description: '运行模式'
+        description: '运行模式选择'
         required: true
         default: 'single'
         type: choice
@@ -23,185 +17,174 @@ on:
           - single
           - continuous
       debug_mode:
-        description: '调试模式'
+        description: '开启调试模式'
         required: false
         default: 'false'
         type: boolean
 
+# 并发控制：使用工作流名称和分支作为组，防止同一分支同时运行多个实例
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false  # 不取消旧任务，避免监控中断
+  cancel-in-progress: true
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 2  # 单次检查应该在2分钟内完成
+    timeout-minutes: 2  # 单次检查应在2分钟内完成
     
     steps:
+      # 步骤1: 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
       
+      # 步骤2: 设置Python环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       
+      # 步骤3: 安装依赖
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          
           # 安装基础依赖
-          pip install requests python-dotenv pandas ccxt python-telegram-bot
-          # 安装项目依赖
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      
-      - name: Configure monitoring mode
-        id: config
-        run: |
-          # 根据输入参数确定运行模式
-          RUN_MODE="${{ inputs.run_mode }}"
-          DEBUG_MODE="${{ inputs.debug_mode }}"
+          pip install requests python-dotenv pandas ccxt python-telegram-bot schedule
           
-          if [ "$RUN_MODE" = "continuous" ]; then
-            echo "运行模式: 持续监控 (适合手动测试)"
-            echo "max_cycles=10" >> $GITHUB_OUTPUT
-            echo "mode=continuous" >> $GITHUB_OUTPUT
+          # 安装项目特定依赖
+          if [ -f requirements.txt ]; then
+            echo "安装 requirements.txt 中的依赖..."
+            pip install -r requirements.txt
           else
-            echo "运行模式: 单次检查 (适合定时任务)"
-            echo "max_cycles=1" >> $GITHUB_OUTPUT
-            echo "mode=single" >> $GITHUB_OUTPUT
+            echo "未找到 requirements.txt"
           fi
-          
-          echo "调试模式: $DEBUG_MODE"
       
+      # 步骤4: 运行DUSKUSDT监控
       - name: Run DUSKUSDT Monitor
         env:
-          # 脚本环境变量
+          # 脚本所需环境变量
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TRADE_SYMBOL: ${{ secrets.TRADE_SYM }}
           
           # 运行模式控制
-          MAX_CYCLES: ${{ steps.config.outputs.max_cycles }}
-          RUN_MODE: ${{ steps.config.outputs.mode }}
-          DEBUG_MODE: ${{ inputs.debug_mode }}
+          RUN_MODE: ${{ github.event_name == 'schedule' && 'single' || inputs.run_mode }}
+          DEBUG_MODE: ${{ github.event_name == 'schedule' && 'false' || inputs.debug_mode }}
           PYTHONUNBUFFERED: '1'
-          
-          # 工作流信息
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
-          echo "=== DUSKUSDT 加密货币监控 ==="
+          echo "=== DUSKUSDT 加密货币监控系统 ==="
           echo "开始时间: $(date)"
+          echo "触发方式: ${{ github.event_name }}"
           echo "运行模式: $RUN_MODE"
-          echo "最大循环次数: $MAX_CYCLES"
           echo "调试模式: $DEBUG_MODE"
           echo "交易对: $TRADE_SYMBOL"
-          echo "工作流ID: $GITHUB_RUN_ID ($GITHUB_RUN_NUMBER)"
           echo ""
           
-          # 创建监控脚本的包装器
-          cat > run_monitor.py << 'EOF'
+          # 根据运行模式确定循环次数
+          if [ "$RUN_MODE" = "continuous" ]; then
+            echo "⚠️ 注意: 持续模式将在1分钟后自动结束，避免GitHub Actions超时"
+            echo "将执行单次检查后退出（避免超时）"
+            MAX_CYCLES=1
+          else
+            MAX_CYCLES=1
+          fi
+          
+          # 创建Python包装器脚本
+          cat > run_dusk_monitor.py << 'EOF'
 import os
-import subprocess
 import time
+import subprocess
 import sys
 
-def run_monitor_cycle(cycle_num):
-    """运行一次监控循环"""
-    print(f"\n=== 监控循环 #{cycle_num} ===")
-    print(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+def run_single_check():
+    """执行单次监控检查"""
+    print(f"执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
     
     # 运行原始监控脚本
-    result = subprocess.run([sys.executable, "dusk_monitor.py"], 
-                          capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "dusk_monitor.py"],
+        capture_output=True,
+        text=True,
+        encoding='utf-8'
+    )
     
     # 输出结果
     if result.stdout:
-        print("脚本输出:")
         print(result.stdout)
     
     if result.stderr:
-        print("错误输出:")
-        print(result.stderr)
+        print("错误信息:", result.stderr)
     
+    print("=" * 50)
     return result.returncode
 
 def main():
-    max_cycles = int(os.getenv('MAX_CYCLES', 1))
-    run_mode = os.getenv('RUN_MODE', 'single')
-    
-    print(f"配置: 模式={run_mode}, 最大循环={max_cycles}")
-    
-    cycles_completed = 0
-    
+    """主函数"""
     try:
-        for i in range(1, max_cycles + 1):
-            exit_code = run_monitor_cycle(i)
-            cycles_completed = i
-            
-            # 如果是单次模式，运行一次就退出
-            if run_mode == 'single':
-                break
-            
-            # 如果是持续模式，等待下一分钟
-            if i < max_cycles:
-                print(f"\n等待下一分钟... ({i}/{max_cycles})")
-                # 计算到下一分钟00秒的等待时间
-                current_seconds = int(time.time()) % 60
-                wait_seconds = 60 - current_seconds
-                if wait_seconds > 0:
-                    print(f"等待 {wait_seconds} 秒...")
-                    time.sleep(wait_seconds)
-    
+        # 执行监控检查
+        exit_code = run_single_check()
+        
+        if exit_code == 0:
+            print("✅ 监控检查完成")
+        else:
+            print(f"❌ 监控检查失败，退出码: {exit_code}")
+        
+        return exit_code
+        
     except KeyboardInterrupt:
-        print("\n监控被中断")
+        print("\n监控被用户中断")
+        return 130
     except Exception as e:
-        print(f"\n监控发生错误: {e}")
-    
-    print(f"\n=== 监控结束 ===")
-    print(f"完成循环: {cycles_completed}/{max_cycles}")
-    print(f"结束时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    return 0
+        print(f"\n监控发生错误: {str(e)}")
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())
 EOF
           
-          # 运行包装器脚本
           echo "执行监控脚本..."
-          python run_monitor.py
+          python run_dusk_monitor.py
+          
+          EXIT_CODE=$?
+          
+          echo ""
+          echo "=== 执行结果 ==="
+          echo "退出代码: $EXIT_CODE"
+          echo "结束时间: $(date)"
+          
+          # 根据退出代码决定是否失败
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ 监控执行失败"
+            exit $EXIT_CODE
+          else
+            echo "✅ 监控执行成功"
+          fi
       
-      - name: Upload logs (可选)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: monitor-logs-${{ github.run_id }}
-          path: |
-            run_monitor.py
-          retention-days: 7
-      
-      - name: Success Notification
-        if: success()
-        run: |
-          echo "✅ 监控任务完成"
-          echo "📊 下次运行: 1分钟后"
-          echo "🔔 如有警报将通过Telegram发送"
-      
-      - name: Failure Notification
+      # 步骤5: 错误处理
+      - name: Handle Failure
         if: failure()
         run: |
           echo "❌ 监控任务失败"
           echo ""
-          echo "可能原因:"
-          echo "1. 脚本执行错误"
-          echo "2. API连接问题"
-          echo "3. 环境变量配置错误"
+          echo "常见问题排查:"
+          echo "1. 检查 dusk_monitor.py 脚本是否有语法错误"
+          echo "2. 确认所有必要的Python库都已安装"
+          echo "3. 检查环境变量是否正确设置"
+          echo "4. 查看上方详细错误信息"
           echo ""
-          echo "建议检查:"
-          echo "- 查看上方详细错误信息"
-          echo "- 确认GitHub Secrets设置正确"
-          echo "- 测试脚本本地运行"
+          echo "💡 调试建议:"
+          echo "- 手动运行: python dusk_monitor.py"
+          echo "- 检查 requirements.txt 文件"
+          echo "- 确认GitHub Secrets中的值正确无误"
+      
+      # 步骤6: 成功通知
+      - name: Success Notification
+        if: success()
+        run: |
+          echo "✅ 监控任务执行成功"
+          echo "🔄 下次自动运行: 1分钟后"
+          echo "📊 运行历史可在GitHub Actions页面查看"
