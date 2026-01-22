@@ -34,29 +34,14 @@ jobs:
         with:
           fetch-depth: 1
       
-      # 步骤2: 显示文件结构（用于验证）
-      - name: Verify file structure
-        run: |
-          echo "=== 当前目录 ==="
-          pwd
-          echo ""
-          echo "=== 验证关键文件是否存在 ==="
-          ls -la dusk_monitor.py && echo "✅ dusk_monitor.py 存在" || echo "❌ dusk_monitor.py 不存在"
-          ls -la requirements.txt && echo "✅ requirements.txt 存在" || echo "⚠️ requirements.txt 不存在"
-          ls -la config.py && echo "✅ config.py 存在" || echo "⚠️ config.py 不存在"
-          ls -la binance_client.py && echo "✅ binance_client.py 存在" || echo "⚠️ binance_client.py 不存在"
-          echo ""
-          echo "=== 所有Python文件 ==="
-          ls *.py
-      
-      # 步骤3: 设置Python环境
+      # 步骤2: 设置Python环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       
-      # 步骤4: 安装依赖
+      # 步骤3: 安装依赖
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -69,22 +54,31 @@ jobs:
             echo "未找到 requirements.txt"
           fi
           
-          # 安装项目可能需要的其他依赖
+          # 安装常用库
           echo "安装常用库..."
           pip install requests python-dotenv schedule pandas
-          
-          # 验证安装
-          pip list | grep -E "requests|python-dotenv|schedule|pandas"
       
-      # 步骤5: 运行监控脚本
+      # 步骤4: 运行监控脚本（关键步骤）
       - name: Run DUSKUSDT Monitor
         env:
           DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
-          # 如果脚本需要环境变量，在这里添加
+          
+          # ============================================
+          # 设置环境变量（对应您的GitHub Secrets）
+          # ============================================
+          # Telegram配置
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TG_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          
+          # 交易对配置
+          TRADE_SYMBOL: ${{ secrets.TRADE_SYM }}
+          
+          # 如果需要Binance API密钥，添加这里
           # BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           # BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
-          # TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          # TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+          # 其他可能需要的环境变量
+          PYTHONUNBUFFERED: '1'  # 确保实时输出日志
         run: |
           echo "🚀 启动 DUSKUSDT 1分钟监控..."
           echo "📅 时间: $(date)"
@@ -101,28 +95,67 @@ jobs:
           fi
           
           echo "✅ 找到脚本文件: dusk_monitor.py"
-          echo "📜 脚本大小: $(wc -l < dusk_monitor.py) 行"
+          echo ""
+          
+          # 验证环境变量设置（不显示敏感信息）
+          echo "🔧 环境变量检查:"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "✅ TELEGRAM_BOT_TOKEN: 已设置"
+          else
+            echo "⚠️ TELEGRAM_BOT_TOKEN: 未设置"
+          fi
+          
+          if [ -n "$TELEGRAM_CHAT_ID" ]; then
+            echo "✅ TELEGRAM_CHAT_ID: 已设置"
+          else
+            echo "⚠️ TELEGRAM_CHAT_ID: 未设置"
+          fi
+          
+          if [ -n "$TRADE_SYMBOL" ]; then
+            echo "✅ TRADE_SYMBOL: $TRADE_SYMBOL"
+          else
+            echo "⚠️ TRADE_SYMBOL: 未设置"
+          fi
+          echo ""
+          
+          # 显示Python版本
+          echo "🐍 Python版本:"
+          python --version
           echo ""
           
           # 运行监控脚本
           echo "▶️ 开始执行监控脚本..."
+          echo "----------------------------------------"
+          
+          # 运行脚本并捕获输出
           python dusk_monitor.py
           
+          EXIT_CODE=$?
+          echo "----------------------------------------"
           echo ""
-          echo "✅ 脚本执行完成"
+          echo "📊 脚本退出代码: $EXIT_CODE"
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ 脚本执行成功"
+          else
+            echo "❌ 脚本执行失败"
+          fi
+          
           echo "⏰ 结束时间: $(date)"
       
-      # 步骤6: 错误处理
+      # 步骤5: 错误处理
       - name: Handle Failure
         if: failure()
         run: |
           echo "❌ 监控任务失败!"
           echo ""
-          echo "可能的原因:"
-          echo "1. Python脚本语法错误"
-          echo "2. 缺少依赖库"
-          echo "3. API连接问题"
-          echo "4. 环境变量未设置"
+          echo "常见问题排查:"
+          echo "1. 检查 dusk_monitor.py 是否有语法错误"
+          echo "2. 确认所有必要的Python库都已安装"
+          echo "3. 检查环境变量是否正确设置"
+          echo "4. 查看脚本是否需要Binance API密钥"
           echo ""
-          echo "请检查 'Run DUSKUSDT Monitor' 步骤的详细输出"
-          echo "如果需要调试，可以手动触发并开启 debug_mode"
+          echo "💡 建议:"
+          echo "- 手动运行 python dusk_monitor.py 测试本地环境"
+          echo "- 检查 requirements.txt 是否包含所有必要依赖"
+          echo "- 确认GitHub Secrets中的值正确无误"
