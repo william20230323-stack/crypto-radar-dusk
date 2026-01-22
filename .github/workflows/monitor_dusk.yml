@@ -14,20 +14,18 @@ on:
         default: 'false'
         type: boolean
 
-# ========== 关键修正：并发控制 ==========
+# ========== 并发控制 ==========
 concurrency:
-  # 为同一个工作流创建一个组，确保同一时间只有一个实例运行
   group: ${{ github.workflow }}-${{ github.ref }}
-  # 当有新的运行启动时，取消所有正在进行的旧运行
   cancel-in-progress: true
-# =======================================
+# =============================
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     
-    # 设置超时时间，避免任务无限期运行
-    timeout-minutes: 10
+    # 设置超时时间（防止任务卡死）
+    timeout-minutes: 3
     
     steps:
       # 步骤1: 检出代码
@@ -36,41 +34,95 @@ jobs:
         with:
           fetch-depth: 1
       
-      # 步骤2: 设置Python环境
+      # 步骤2: 显示文件结构（用于验证）
+      - name: Verify file structure
+        run: |
+          echo "=== 当前目录 ==="
+          pwd
+          echo ""
+          echo "=== 验证关键文件是否存在 ==="
+          ls -la dusk_monitor.py && echo "✅ dusk_monitor.py 存在" || echo "❌ dusk_monitor.py 不存在"
+          ls -la requirements.txt && echo "✅ requirements.txt 存在" || echo "⚠️ requirements.txt 不存在"
+          ls -la config.py && echo "✅ config.py 存在" || echo "⚠️ config.py 不存在"
+          ls -la binance_client.py && echo "✅ binance_client.py 存在" || echo "⚠️ binance_client.py 不存在"
+          echo ""
+          echo "=== 所有Python文件 ==="
+          ls *.py
+      
+      # 步骤3: 设置Python环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       
-      # 步骤3: 安装依赖
+      # 步骤4: 安装依赖
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          
+          # 安装requirements.txt中的依赖
+          if [ -f requirements.txt ]; then
+            echo "安装 requirements.txt 中的依赖..."
+            pip install -r requirements.txt
+          else
+            echo "未找到 requirements.txt"
+          fi
+          
+          # 安装项目可能需要的其他依赖
+          echo "安装常用库..."
+          pip install requests python-dotenv schedule pandas
+          
+          # 验证安装
+          pip list | grep -E "requests|python-dotenv|schedule|pandas"
       
-      # 步骤4: 运行监控脚本
+      # 步骤5: 运行监控脚本
       - name: Run DUSKUSDT Monitor
         env:
           DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
-          API_KEY: ${{ secrets.API_KEY }}
-          API_SECRET: ${{ secrets.API_SECRET }}
+          # 如果脚本需要环境变量，在这里添加
+          # BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          # BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          # TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "Starting DUSKUSDT 1-Minute Monitor..."
-          echo "Debug Mode: $DEBUG_MODE"
-          echo "Timestamp: $(date)"
+          echo "🚀 启动 DUSKUSDT 1分钟监控..."
+          echo "📅 时间: $(date)"
+          echo "🐛 调试模式: $DEBUG_MODE"
+          echo "📁 工作目录: $(pwd)"
+          echo ""
           
-          # 运行您的监控脚本，替换为实际脚本名称
-          python scripts/dusk_monitor.py \
-            --interval 1m \
-            --debug $DEBUG_MODE
+          # 验证脚本文件存在
+          if [ ! -f "dusk_monitor.py" ]; then
+            echo "❌ 错误: 找不到 dusk_monitor.py 文件"
+            echo "当前目录内容:"
+            ls -la
+            exit 1
+          fi
           
-          echo "Monitor completed at $(date)"
+          echo "✅ 找到脚本文件: dusk_monitor.py"
+          echo "📜 脚本大小: $(wc -l < dusk_monitor.py) 行"
+          echo ""
+          
+          # 运行监控脚本
+          echo "▶️ 开始执行监控脚本..."
+          python dusk_monitor.py
+          
+          echo ""
+          echo "✅ 脚本执行完成"
+          echo "⏰ 结束时间: $(date)"
       
-      # 步骤5: 错误处理（可选）
+      # 步骤6: 错误处理
       - name: Handle Failure
         if: failure()
         run: |
-          echo "Monitor job failed!"
-          echo "Check logs for details."
-          # 可以添加错误通知逻辑，如发送邮件或Slack消息
+          echo "❌ 监控任务失败!"
+          echo ""
+          echo "可能的原因:"
+          echo "1. Python脚本语法错误"
+          echo "2. 缺少依赖库"
+          echo "3. API连接问题"
+          echo "4. 环境变量未设置"
+          echo ""
+          echo "请检查 'Run DUSKUSDT Monitor' 步骤的详细输出"
+          echo "如果需要调试，可以手动触发并开启 debug_mode"
