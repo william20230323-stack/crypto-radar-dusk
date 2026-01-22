@@ -1,8 +1,11 @@
-name: DUSKUSDT 1-Minute Monitor
+name: DUSKUSDT 5-Minute Monitor
 
 on:
+  # 调整为5分钟一次，避免频率过高导致冲突
   schedule:
-    - cron: '*/1 * * * *'
+    - cron: '*/5 * * * *'
+  
+  # 允许手动触发
   workflow_dispatch:
     inputs:
       debug_mode:
@@ -11,14 +14,20 @@ on:
         default: 'false'
         type: boolean
 
+# ========== 并发控制 ==========
+# 如果脚本能快速完成（<1分钟），可以启用并发控制
+# 如果脚本需要更长时间，建议注释掉这部分
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+# =============================
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    
+    # 设置超时时间为4分钟，确保在下次触发前完成
+    timeout-minutes: 4
     
     steps:
       # 步骤1: 检出代码
@@ -27,133 +36,119 @@ jobs:
         with:
           fetch-depth: 1
       
-      # 步骤2: 设置Python环境
+      # 步骤2: 验证文件结构
+      - name: Verify files
+        run: |
+          echo "✅ 验证关键文件..."
+          ls -la dusk_monitor.py requirements.txt config.py 2>/dev/null || echo "部分文件不存在"
+          echo ""
+          echo "📋 Python文件列表:"
+          ls *.py 2>/dev/null || echo "无Python文件"
+      
+      # 步骤3: 设置Python环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       
-      # 步骤3: 安装依赖
+      # 步骤4: 安装依赖
       - name: Install dependencies
         run: |
+          echo "📦 安装依赖..."
           python -m pip install --upgrade pip
           
           # 安装requirements.txt中的依赖
           if [ -f requirements.txt ]; then
-            echo "安装 requirements.txt 中的依赖..."
+            echo "从requirements.txt安装..."
             pip install -r requirements.txt
           else
-            echo "未找到 requirements.txt"
+            echo "未找到requirements.txt，安装基础依赖"
+            pip install requests python-dotenv pandas ccxt python-telegram-bot
           fi
           
-          # 安装常用库
-          echo "安装常用库..."
-          pip install requests python-dotenv schedule pandas ccxt
+          # 验证已安装的包
+          echo "✅ 已安装的包:"
+          pip list | grep -E "(requests|python-dotenv|pandas|ccxt|telegram)"
       
-      # 步骤4: 运行监控脚本（关键步骤）
+      # 步骤5: 运行监控脚本
       - name: Run DUSKUSDT Monitor
         env:
-          DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
-          
-          # ============================================
-          # 设置环境变量（必须与脚本中的变量名一致）
-          # ============================================
-          # 脚本期望的变量名
+          # 脚本使用的环境变量
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TRADE_SYMBOL: ${{ secrets.TRADE_SYM }}
           
-          # 其他可能需要的环境变量
-          PYTHONUNBUFFERED: '1'  # 确保实时输出日志
+          # 调试相关
+          DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
+          PYTHONUNBUFFERED: '1'
+          
+          # 可选：设置时区
+          TZ: 'UTC'
         run: |
-          echo "🚀 启动 DUSKUSDT 1分钟监控..."
+          echo "🚀 启动DUSKUSDT监控..."
           echo "📅 时间: $(date)"
+          echo "🔄 频率: 5分钟"
+          echo "💰 交易对: $TRADE_SYMBOL"
           echo "🐛 调试模式: $DEBUG_MODE"
-          echo "📁 工作目录: $(pwd)"
           echo ""
           
-          # 验证脚本文件存在
+          # 验证脚本存在
           if [ ! -f "dusk_monitor.py" ]; then
-            echo "❌ 错误: 找不到 dusk_monitor.py 文件"
-            echo "当前目录内容:"
-            ls -la
+            echo "❌ 错误: 找不到dusk_monitor.py"
             exit 1
           fi
           
-          echo "✅ 找到脚本文件: dusk_monitor.py"
+          # 检查脚本中的环境变量使用
+          echo "🔍 检查脚本环境变量引用..."
+          grep -n "os\.getenv\|os\.environ" dusk_monitor.py | head -5 || true
           echo ""
           
-          # 验证环境变量设置（不显示敏感信息）
-          echo "🔧 环境变量检查:"
-          
-          if [ -n "$TG_TOKEN" ]; then
-            echo "✅ TG_TOKEN: 已设置 (长度: ${#TG_TOKEN} 字符)"
-          else
-            echo "❌ TG_TOKEN: 未设置"
-          fi
-          
-          if [ -n "$TG_CHAT_ID" ]; then
-            echo "✅ TG_CHAT_ID: 已设置 (值: $TG_CHAT_ID)"
-          else
-            echo "❌ TG_CHAT_ID: 未设置"
-          fi
-          
-          if [ -n "$TRADE_SYMBOL" ]; then
-            echo "✅ TRADE_SYMBOL: $TRADE_SYMBOL"
-          else
-            echo "❌ TRADE_SYMBOL: 未设置"
-            echo "💡 提示: 检查GitHub Secrets中是否有 TRADE_SYM"
-          fi
-          echo ""
-          
-          # 显示Python版本
-          echo "🐍 Python版本:"
-          python --version
-          echo ""
-          
-          # 检查脚本中实际使用的变量
-          echo "🔍 检查脚本中的环境变量引用..."
-          grep -n "os\.getenv\|os\.environ" dusk_monitor.py | head -10
-          echo ""
-          
-          # 运行监控脚本
-          echo "▶️ 开始执行监控脚本..."
+          # 运行脚本并设置超时（最多3分钟）
+          echo "▶️ 执行监控脚本..."
           echo "----------------------------------------"
           
-          # 运行脚本并捕获输出
-          python dusk_monitor.py
+          # 使用timeout确保脚本不会无限运行
+          timeout 180 python dusk_monitor.py  # 3分钟超时
           
           EXIT_CODE=$?
           echo "----------------------------------------"
           echo ""
-          echo "📊 脚本退出代码: $EXIT_CODE"
           
           if [ $EXIT_CODE -eq 0 ]; then
-            echo "✅ 脚本执行成功"
+            echo "✅ 监控脚本执行成功"
+          elif [ $EXIT_CODE -eq 124 ]; then
+            echo "⚠️ 监控脚本超时（运行超过3分钟）"
+            echo "建议：检查脚本逻辑，确保不会无限循环"
           else
-            echo "❌ 脚本执行失败"
-            echo ""
-            echo "💡 调试建议:"
-            echo "1. 检查脚本中环境变量的使用方式"
-            echo "2. 确认脚本是否需要其他环境变量"
-            echo "3. 尝试本地运行: python dusk_monitor.py"
+            echo "❌ 监控脚本执行失败，退出码: $EXIT_CODE"
+            echo "请检查脚本错误信息"
           fi
           
-          echo "⏰ 结束时间: $(date)"
+          echo "⏰ 完成时间: $(date)"
       
-      # 步骤5: 错误处理
+      # 步骤6: 错误处理
       - name: Handle Failure
         if: failure()
         run: |
-          echo "❌ 监控任务失败!"
+          echo "❌ 工作流执行失败"
           echo ""
-          echo "请检查以下项目:"
-          echo "1. 确认GitHub Secrets中的值正确:"
-          echo "   - TG_TOKEN: Telegram机器人令牌"
-          echo "   - TG_CHAT_ID: Telegram聊天ID"
-          echo "   - TRADE_SYM: 交易对符号（如 DUSKUSDT）"
+          echo "可能原因及解决方案:"
+          echo "1. 脚本错误 - 检查Python脚本语法"
+          echo "2. 依赖缺失 - 确认requirements.txt包含所有必要包"
+          echo "3. 环境变量错误 - 确认GitHub Secrets设置正确"
+          echo "4. 超时问题 - 脚本运行时间过长"
           echo ""
-          echo "2. 检查脚本中如何读取环境变量:"
-          echo "   应该使用: os.getenv('TG_TOKEN')"
-          echo "   而不是: os.getenv('TELEGRAM_BOT_TOKEN')"
+          echo "📋 调试建议:"
+          echo "- 手动运行工作流并开启debug_mode"
+          echo "- 在本地测试: python dusk_monitor.py"
+          echo "- 检查脚本是否需要修改为单次执行模式"
+      
+      # 步骤7: 成功通知（可选）
+      - name: Success Notification
+        if: success()
+        run: |
+          echo "🎉 监控任务完成"
+          echo "✅ 所有步骤执行成功"
+          echo "🔄 下次运行: 5分钟后"
+          echo "📊 查看运行历史获取详细日志"
