@@ -5,7 +5,6 @@ import time
 import requests
 from datetime import datetime, timedelta
 import random
-import json
 from typing import Dict, Optional, Tuple, List
 
 # 從環境變數讀取設定
@@ -21,15 +20,20 @@ if not TG_TOKEN or not TG_CHAT_ID:
 print(f"✅ 開始實時監控 {SYMBOL} 1分鐘K線...")
 
 # 監控設定
-CHECK_INTERVAL = 15  # 檢查間隔（秒） - 每15秒檢查一次
+CHECK_INTERVAL = 15  # 檢查間隔（秒）
 ALERT_COOLDOWN = 60  # 警報冷卻時間（秒）
-REQUEST_DELAY = 2.0  # API請求間隔（秒）- 增加到2秒
+REQUEST_DELAY = 2.0  # API請求間隔（秒）
 MAX_RETRIES = 3
 API_TIMEOUT = 10
 
+# 警報條件閾值（可調整）
+VOLUME_THRESHOLD = 1.8  # 成交量閾值（相對於前一根）
+BUY_SELL_THRESHOLD = 1.8  # 買賣比率閾值
+PRICE_CHANGE_THRESHOLD = 1.0  # 價格變化閾值（%）
+
 # 狀態追蹤
 last_alert_time = {"BUY_IN_RED": 0, "SELL_IN_GREEN": 0}
-processed_kline_times = set()  # 已處理的K線時間戳
+last_processed_kline_time = 0  # 只記錄最後一根處理的K線時間
 
 class BinanceUSAPI:
     """美國幣安API客戶端"""
@@ -45,7 +49,7 @@ class BinanceUSAPI:
         self.session.headers.update({
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Origin": "https://www.binance.us",
             "Referer": "https://www.binance.us/"
         })
@@ -68,7 +72,7 @@ class BinanceUSAPI:
             self.reset_time = current_time
         
         # Binance.US 限制：每分鐘1200次請求
-        if self.request_count >= 1000:  # 保守一點
+        if self.request_count >= 1000:
             wait_time = 60 - (current_time - self.reset_time)
             if wait_time > 0:
                 print(f"⏳ 接近速率限制，等待 {wait_time:.1f}秒...")
@@ -82,7 +86,6 @@ class BinanceUSAPI:
         current_time = time.time()
         elapsed = current_time - self.last_request_time
         
-        # 確保請求間隔
         if elapsed < REQUEST_DELAY:
             time.sleep(REQUEST_DELAY - elapsed)
         
@@ -97,18 +100,17 @@ class BinanceUSAPI:
                 url, 
                 params=params, 
                 timeout=API_TIMEOUT,
-                verify=True  # 啟用SSL驗證
+                verify=True
             )
             
-            # 更新計數器
             self.request_count += 1
             self.last_request_time = time.time()
             
-            # 處理429錯誤（請求過於頻繁）
+            # 處理429錯誤
             if response.status_code == 429:
                 print(f"⚠️ 請求限制 (429)，輪換API端點...")
                 self.rotate_base_url()
-                wait_time = 60 + random.uniform(1, 5)  # 等待1分鐘以上
+                wait_time = 60 + random.uniform(1, 5)
                 print(f"⏳ 等待 {wait_time:.1f}秒後重試...")
                 time.sleep(wait_time)
                 
@@ -116,7 +118,7 @@ class BinanceUSAPI:
                     return self.make_request(endpoint, params, retry + 1)
                 return None
             
-            # 處理451錯誤（地理限制）
+            # 處理451錯誤
             if response.status_code == 451:
                 print(f"❌ 地理限制 (451)，嘗試其他端點...")
                 self.rotate_base_url()
@@ -128,7 +130,6 @@ class BinanceUSAPI:
                     return self.make_request(endpoint, params, retry + 1)
                 return None
             
-            # 處理其他錯誤狀態碼
             if response.status_code != 200:
                 print(f"⚠️ API返回狀態碼 {response.status_code}")
                 
@@ -155,42 +156,49 @@ class BinanceUSAPI:
             
             return None
     
-    def get_klines(self, symbol: str, interval: str = "1m", limit: int = 5) -> Optional[List[Dict]]:
-        """獲取K線數據"""
-        print(f"🔍 嘗試從 Binance.US 獲取 {symbol} 數據...")
+    def get_latest_kline(self, symbol: str, interval: str = "1m") -> Optional[Dict]:
+        """獲取最新一根完整K線數據"""
+        print(f"🔍 獲取 {symbol} 最新K線數據...")
         
-        # 首先檢查交易對是否存在
         try:
+            # 獲取最近2根K線（用於比較）
             data = self.make_request("klines", {
                 "symbol": symbol,
                 "interval": interval,
-                "limit": limit
+                "limit": 2
             })
             
-            if data and isinstance(data, list):
-                klines = []
-                for k in data:
-                    try:
-                        kline_time = k[0]
-                        klines.append({
-                            "time": kline_time,
-                            "open": float(k[1]),
-                            "high": float(k[2]),
-                            "low": float(k[3]),
-                            "close": float(k[4]),
-                            "volume": float(k[5]),
-                            "quote_volume": float(k[7]),
-                            "taker_buy_volume": float(k[9]),
-                            "taker_buy_quote_volume": float(k[10])
-                        })
-                    except (IndexError, ValueError, TypeError) as e:
-                        print(f"⚠️ 解析K線數據錯誤: {e}")
-                        continue
+            if data and isinstance(data, list) and len(data) >= 1:
+                # 使用最新一根完整K線
+                k = data[-1]
+                kline_time = k[0]
                 
-                if klines:
-                    klines.sort(key=lambda x: x["time"])
-                    print(f"✅ 成功獲取 {len(klines)} 根K線數據")
-                    return klines
+                # 獲取前一根K線用於比較（如果有的話）
+                prev_k = data[-2] if len(data) >= 2 else k
+                
+                kline_data = {
+                    "time": kline_time,
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                    "quote_volume": float(k[7]),
+                    "taker_buy_volume": float(k[9]),
+                    "taker_buy_quote_volume": float(k[10])
+                }
+                
+                prev_kline_data = {
+                    "time": prev_k[0],
+                    "close": float(prev_k[4]),
+                    "volume": float(prev_k[5])
+                }
+                
+                print(f"✅ 成功獲取K線數據 (時間: {datetime.fromtimestamp(kline_time/1000).strftime('%H:%M:%S')})")
+                return {
+                    "current": kline_data,
+                    "previous": prev_kline_data
+                }
             
             return None
             
@@ -226,7 +234,6 @@ def send_telegram(message: str) -> bool:
             "disable_web_page_preview": True
         }
         
-        # 為Telegram請求添加短暫延遲
         time.sleep(0.3)
         response = requests.post(url, json=payload, timeout=API_TIMEOUT)
         
@@ -240,58 +247,43 @@ def send_telegram(message: str) -> bool:
         print(f"❌ Telegram 錯誤: {e}")
         return False
 
-def analyze_latest_kline(api: BinanceUSAPI) -> Optional[Dict]:
-    """分析最新的完整K線"""
-    global processed_kline_times  # 宣告使用全域變數
+def analyze_single_kline(api: BinanceUSAPI) -> Optional[Dict]:
+    """分析單根K線"""
+    global last_processed_kline_time
     
-    # 獲取最近5根K線
-    klines = api.get_klines(SYMBOL, "1m", 5)
-    if not klines:
-        print("❌ 無法從 Binance.US 獲取K線數據")
+    # 獲取最新K線數據
+    kline_data = api.get_latest_kline(SYMBOL, "1m")
+    if not kline_data:
+        print("❌ 無法獲取K線數據")
         return None
     
-    # 獲取最新完整的K線（倒數第二根）
-    if len(klines) >= 2:
-        latest_complete = klines[-2]
-    else:
-        latest_complete = klines[-1]
+    current_kline = kline_data["current"]
+    previous_kline = kline_data["previous"]
     
-    kline_time = latest_complete["time"]
+    kline_time = current_kline["time"]
     kline_time_str = datetime.fromtimestamp(kline_time/1000).strftime("%H:%M:%S")
     
     # 檢查是否已經處理過這根K線
-    if kline_time in processed_kline_times:
+    if kline_time == last_processed_kline_time:
         print(f"⏭️  K線 {kline_time_str} 已處理，跳過")
         return None
     
-    # 獲取前一K線進行比較
-    if len(klines) >= 3:
-        previous = klines[-3]
-    elif len(klines) >= 2:
-        previous = klines[-2]
-    else:
-        previous = latest_complete
-    
-    # 標記為已處理
-    processed_kline_times.add(kline_time)
-    
-    # 清理舊的時間戳（保留最近30分鐘）
-    thirty_min_ago = time.time() * 1000 - 30 * 60 * 1000
-    processed_kline_times = {t for t in processed_kline_times if t > thirty_min_ago}
+    # 更新最後處理的K線時間
+    last_processed_kline_time = kline_time
     
     # 判斷K線顏色
-    is_red = latest_complete["close"] < latest_complete["open"]  # 陰線
-    is_green = latest_complete["close"] > latest_complete["open"]  # 陽線
+    is_red = current_kline["close"] < current_kline["open"]  # 陰線
+    is_green = current_kline["close"] > current_kline["open"]  # 陽線
     
     # 計算價格變化
-    price_change = ((latest_complete["close"] - previous["close"]) / previous["close"]) * 100
+    price_change = ((current_kline["close"] - previous_kline["close"]) / previous_kline["close"]) * 100
     
     # 計算成交量數據
-    buy_volume = latest_complete.get("taker_buy_volume", 0)
-    sell_volume = latest_complete["volume"] - buy_volume
+    buy_volume = current_kline.get("taker_buy_volume", 0)
+    sell_volume = current_kline["volume"] - buy_volume
     
-    buy_value = latest_complete.get("taker_buy_quote_volume", 0)
-    sell_value = latest_complete["quote_volume"] - buy_value
+    buy_value = current_kline.get("taker_buy_quote_volume", 0)
+    sell_value = current_kline["quote_volume"] - buy_value
     
     # 計算買賣比率
     if sell_volume > 0:
@@ -300,31 +292,31 @@ def analyze_latest_kline(api: BinanceUSAPI) -> Optional[Dict]:
         buy_sell_ratio = 999 if buy_volume > 0 else 1
     
     # 計算成交量比率（與前一根K線比較）
-    if previous["volume"] > 0:
-        volume_ratio = latest_complete["volume"] / previous["volume"]
+    if previous_kline["volume"] > 0:
+        volume_ratio = current_kline["volume"] / previous_kline["volume"]
     else:
         volume_ratio = 1
     
     print(f"📊 分析K線 {kline_time_str}:")
-    print(f"   收盤價: ${latest_complete['close']:.5f}")
+    print(f"   收盤價: ${current_kline['close']:.5f}")
     print(f"   價格變化: {price_change:.2f}%")
     print(f"   K線顏色: {'🔴 陰線' if is_red else '🟢 陽線'}")
-    print(f"   成交量: {latest_complete['volume']:,.0f}")
+    print(f"   成交量: {current_kline['volume']:,.0f}")
+    print(f"   成交量比率: {volume_ratio:.2f}x")
     print(f"   買入金額: ${buy_value:,.2f}")
     print(f"   賣出金額: ${sell_value:,.2f}")
     print(f"   買/賣比: {buy_sell_ratio:.2f}")
-    print(f"   成交量比率: {volume_ratio:.2f}x")
     
     return {
         "symbol": SYMBOL,
         "kline_time": kline_time,
         "kline_time_str": kline_time_str,
-        "open": latest_complete["open"],
-        "high": latest_complete["high"],
-        "low": latest_complete["low"],
-        "close": latest_complete["close"],
-        "volume": latest_complete["volume"],
-        "quote_volume": latest_complete["quote_volume"],
+        "open": current_kline["open"],
+        "high": current_kline["high"],
+        "low": current_kline["low"],
+        "close": current_kline["close"],
+        "volume": current_kline["volume"],
+        "quote_volume": current_kline["quote_volume"],
         "price_change": price_change,
         "is_red": is_red,
         "is_green": is_green,
@@ -340,14 +332,10 @@ def analyze_latest_kline(api: BinanceUSAPI) -> Optional[Dict]:
 def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
     """檢查警報條件"""
     
-    # 警報條件 - 可調整參數
-    VOLUME_THRESHOLD = 1.5  # 成交量閾值（相對於前一根）
-    BUY_SELL_THRESHOLD = 2.0  # 買賣比率閾值
-    
     current_time = market_data["timestamp"]
     kline_time_str = market_data["kline_time_str"]
     
-    # 情況1: 陰線但大量買入（買單是賣單的2倍以上）
+    # 情況1: 陰線但大量買入
     if market_data["is_red"] and market_data["buy_sell_ratio"] > BUY_SELL_THRESHOLD:
         message = f"""
 🚨 <b>異常買入警報 - {SYMBOL}</b>
@@ -367,7 +355,7 @@ def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
 """
         return True, "BUY_IN_RED", message
     
-    # 情況2: 陽線但大量賣出（賣單是買單的2倍以上）
+    # 情況2: 陽線但大量賣出
     elif market_data["is_green"] and market_data["buy_sell_ratio"] < (1/BUY_SELL_THRESHOLD):
         message = f"""
 🚨 <b>異常賣出警報 - {SYMBOL}</b>
@@ -387,6 +375,26 @@ def check_alert_conditions(market_data: Dict) -> Tuple[bool, str, str]:
 """
         return True, "SELL_IN_GREEN", message
     
+    # 情況3: 成交量異常放大（無論陰陽）
+    elif market_data["volume_ratio"] > VOLUME_THRESHOLD and abs(market_data["price_change"]) > PRICE_CHANGE_THRESHOLD:
+        kline_type = "陰線" if market_data["is_red"] else "陽線"
+        change_direction = "下跌" if market_data["price_change"] < 0 else "上漲"
+        
+        message = f"""
+⚠️ <b>成交量異常警報 - {SYMBOL}</b>
+
+🎨 <b>K線類型:</b> {kline_type}
+💰 <b>K線收盤價:</b> ${market_data['close']:.5f}
+📊 <b>價格變化:</b> {market_data['price_change']:.2f}% ({change_direction})
+📈 <b>成交量比率:</b> {market_data['volume_ratio']:.2f}x
+📦 <b>成交量:</b> {market_data['volume']:,.0f}
+
+⏰ <b>K線時間:</b> {kline_time_str}
+📡 <b>警報時間:</b> {current_time}
+🔗 <b>數據來源:</b> Binance.US API
+"""
+        return True, "VOLUME_SPIKE", message
+    
     return False, "NORMAL", ""
 
 def can_send_alert(alert_type: str) -> bool:
@@ -404,14 +412,19 @@ def can_send_alert(alert_type: str) -> bool:
 def real_time_monitor():
     """實時監控主函數"""
     print("=" * 70)
-    print("🚀 DUSK/USDT 實時監控系統啟動 (Binance.US 版本)")
+    print("🚀 DUSK/USDT 單K線實時監控系統")
     print("=" * 70)
     print(f"📊 交易對: {SYMBOL}")
     print(f"⏰ 時間框架: 1分鐘K線")
     print(f"🔄 檢查間隔: {CHECK_INTERVAL}秒")
     print(f"🔔 通知模式: 僅異常時發送")
     print(f"⏱️  警報冷卻: {ALERT_COOLDOWN}秒")
-    print(f"🌐 API端點: Binance.US (美國合規)")
+    print(f"🌐 API端點: Binance.US")
+    print("=" * 70)
+    print(f"📈 警報閾值設定:")
+    print(f"   買賣比率: >{BUY_SELL_THRESHOLD:.1f}")
+    print(f"   成交量比率: >{VOLUME_THRESHOLD:.1f}")
+    print(f"   價格變化: >{PRICE_CHANGE_THRESHOLD:.1f}%")
     print("=" * 70)
     
     # 初始化API
@@ -434,7 +447,7 @@ def real_time_monitor():
     
     # 發送啟動通知
     start_msg = f"""
-🤖 <b>{SYMBOL} 實時監控系統啟動</b>
+🤖 <b>{SYMBOL} 單K線監控系統啟動</b>
 
 ✅ 系統已啟動並開始實時監控
 📊 交易對: {SYMBOL}
@@ -442,11 +455,11 @@ def real_time_monitor():
 🔄 檢查間隔: {CHECK_INTERVAL}秒
 🔔 通知模式: 僅異常時發送
 ⏱️  警報冷卻: {ALERT_COOLDOWN}秒
-🌐 數據來源: Binance.US (美國合規)
 
-⚠️ <b>監控條件:</b>
-1. 陰線但大量買入（買/賣比 > 2.0）
-2. 陽線但大量賣出（賣/買比 > 2.0）
+📈 <b>警報條件:</b>
+1. 陰線但大量買入（買/賣比 > {BUY_SELL_THRESHOLD}）
+2. 陽線但大量賣出（賣/買比 > {BUY_SELL_THRESHOLD}）
+3. 成交量異常放大（成交量比率 > {VOLUME_THRESHOLD}）
 
 🕐 啟動時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -466,8 +479,8 @@ def real_time_monitor():
             
             print(f"\n🔄 檢查 #{check_count} - {current_time_str}")
             
-            # 獲取並分析最新K線
-            market_data = analyze_latest_kline(api)
+            # 分析單根K線
+            market_data = analyze_single_kline(api)
             
             if market_data:
                 # 重置錯誤計數器
@@ -498,12 +511,13 @@ def real_time_monitor():
                     error_count = 0
             
             # 顯示統計資訊
-            if check_count % 10 == 0:  # 每10次檢查顯示一次統計
+            if check_count % 10 == 0:
                 print(f"\n📈 統計資訊:")
                 print(f"   檢查次數: {check_count}")
                 print(f"   警報次數: {alert_count}")
                 print(f"   錯誤次數: {error_count}")
-                print(f"   正常率: {((check_count - error_count) / check_count * 100):.1f}%")
+                success_rate = ((check_count - error_count) / check_count * 100) if check_count > 0 else 0
+                print(f"   成功率: {success_rate:.1f}%")
                 print(f"   運行時間: {timedelta(seconds=check_count * CHECK_INTERVAL)}")
             
             # 等待下一次檢查
@@ -528,7 +542,7 @@ def real_time_monitor():
 """
         send_telegram(error_msg)
         
-        # 等待一段時間後重新啟動
+        # 等待後重新啟動
         print("⏳ 等待30秒後嘗試重新啟動...")
         time.sleep(30)
         return False
@@ -552,7 +566,7 @@ def real_time_monitor():
 
 def main():
     """主入口函數"""
-    print("🚀 啟動實時監控系統 (Binance.US 版本)...")
+    print("🚀 啟動單K線實時監控系統...")
     print(f"📅 當前時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # 最大重啟次數
