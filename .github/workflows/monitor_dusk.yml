@@ -1,109 +1,277 @@
-name: 'DUSKUSDT 1-Minute Monitor'
+name: DUSK/USDT Multi-Exchange Monitor
 
 on:
-  # 定时触发 - 每分钟一次
+  # 每15分鐘運行一次（可根據需要調整）
   schedule:
-    - cron: '*/1 * * * *'
+    - cron: '*/15 * * * *'
   
-  # 手动触发
+  # 手動觸發
   workflow_dispatch:
     inputs:
-      debug_mode:
-        description: '开启调试模式'
+      test_mode:
+        description: '測試模式（不發送真實警報）'
         required: false
         default: 'false'
         type: boolean
+  
+  # 代碼推送時也運行（可選）
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/**'
 
-# 并发控制 - 确保每分钟只有一个实例运行
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  # 環境變數（在GitHub Secrets中設置）
+  TG_TOKEN: ${{ secrets.TG_TOKEN }}
+  TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+  
+  # 系統配置
+  PYTHON_VERSION: '3.9'
+  CHECK_INTERVAL: '15'  # 掃描間隔（秒）
 
 jobs:
-  monitor:
+  # 第一步：運行系統測試
+  test-system:
+    name: 🔍 系統測試
     runs-on: ubuntu-latest
-    timeout-minutes: 2
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: 📥 檢出代碼
+        uses: actions/checkout@v3
+      
+      - name: 🐍 設置 Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
         with:
-          fetch-depth: 1
+          python-version: ${{ env.PYTHON_VERSION }}
       
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-      
-      - name: Install dependencies
+      - name: 📦 安裝依賴
         run: |
-          python -m pip install --upgrade pip
-          pip install requests python-dotenv pandas ccxt python-telegram-bot schedule
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ 依賴安裝完成"
       
-      - name: Run DUSKUSDT Monitor
-        env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL || secrets.TRADE_SYM || 'DUSKUSDT' }}
-          DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
-          PYTHONUNBUFFERED: '1'
+      - name: 🧪 運行全面測試
+        id: run-tests
         run: |
-          echo "=== DUSKUSDT Cryptocurrency Monitor ==="
-          echo "Start time: $(date)"
-          echo "Trigger: ${{ github.event_name }}"
-          echo "Debug mode: $DEBUG_MODE"
-          echo "Trading pair: $TRADE_SYMBOL"
-          echo ""
-          
-          # 验证环境变量
-          if [ -z "$TG_TOKEN" ]; then
-            echo "❌ ERROR: TG_TOKEN not set"
-            exit 1
-          fi
-          
-          if [ -z "$TG_CHAT_ID" ]; then
-            echo "❌ ERROR: TG_CHAT_ID not set"
-            exit 1
-          fi
-          
-          echo "✅ Environment variables verified"
-          echo ""
-          
-          # 运行脚本，使用timeout确保不会无限等待
-          # 30秒足够执行一次检查，然后强制退出
-          echo "Running monitor script (timeout: 30s)..."
-          timeout 30 python dusk_monitor.py
-          
-          EXIT_CODE=$?
-          echo ""
-          
-          # 处理不同的退出代码
-          if [ $EXIT_CODE -eq 0 ]; then
-            echo "✅ Script completed successfully"
-          elif [ $EXIT_CODE -eq 124 ]; then
-            echo "⚠️ Script timed out (expected, prevents waiting 55 seconds)"
+          echo "🧪 開始系統測試..."
+          if python test_all.py; then
+            echo "✅ 所有測試通過"
+            echo "result=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ Script failed with exit code: $EXIT_CODE"
-            exit $EXIT_CODE
+            echo "❌ 測試失敗"
+            echo "result=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: 📊 生成測試報告
+        if: always()
+        run: |
+          echo "📋 測試報告"
+          echo "=========="
+          echo "測試時間: $(date)"
+          echo "Python版本: $(python --version)"
+          echo "作業系統: $RUNNER_OS"
+          echo "測試結果: ${{ steps.run-tests.outputs.result || 'unknown' }}"
+      
+      - name: 💾 保存測試日誌
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-logs
+          path: |
+            *.log
+            test_output*.txt
+          retention-days: 7
+
+  # 第二步：執行監控（依賴測試成功）
+  run-monitor:
+    name: 🚀 執行監控
+    needs: test-system
+    if: needs.test-system.result == 'success'
+    runs-on: ubuntu-latest
+    
+    # 超時設置：監控運行30分鐘
+    timeout-minutes: 30
+    
+    steps:
+      - name: 📥 檢出代碼
+        uses: actions/checkout@v3
+      
+      - name: 🐍 設置 Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: 📦 安裝依賴
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 🔧 環境檢查
+        run: |
+          echo "🔧 環境檢查"
+          echo "=========="
+          echo "TG_TOKEN設置: ${{ env.TG_TOKEN != '' && '✅ 已設置' || '❌ 未設置' }}"
+          echo "TG_CHAT_ID設置: ${{ env.TG_CHAT_ID != '' && '✅ 已設置' || '❌ 未設置' }}"
+          echo "Python版本: $(python --version)"
+          echo "當前時間: $(date)"
+          echo "台灣時間: $(TZ='Asia/Taipei' date)"
+          
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "❌ 環境變數未完整設置，監控可能無法發送警報"
+          fi
+      
+      - name: 🚀 啟動多交易所監控
+        id: monitor
+        env:
+          # 如果是測試模式，設置標記
+          TEST_MODE: ${{ inputs.test_mode || 'false' }}
+        run: |
+          echo "🚀 啟動 DUSK/USDT 多交易所監控系統"
+          echo "=================================="
+          
+          # 顯示啟動信息
+          echo "🏦 交易所數量: 6 家"
+          echo "⏰ 掃描間隔: ${{ env.CHECK_INTERVAL }} 秒"
+          echo "🌍 時區: 台灣時間 (UTC+8)"
+          echo "🧪 測試模式: $TEST_MODE"
+          echo ""
+          
+          # 設置監控參數
+          MONITOR_ARGS=""
+          if [ "$TEST_MODE" = "true" ]; then
+            MONITOR_ARGS="--test-mode"
+            echo "⚠️  測試模式啟用：不會發送真實警報"
           fi
           
-          echo "End time: $(date)"
-      
-      - name: Handle failure
-        if: failure()
-        run: |
-          echo "❌ Monitor job failed"
+          # 運行監控（5分鐘，然後手動停止）
+          echo "🔄 開始監控運行（5分鐘測試）..."
+          
+          # 啟動監控進程（後台運行）
+          python dusk_monitor.py $MONITOR_ARGS > monitor_output.log 2>&1 &
+          MONITOR_PID=$!
+          
+          echo "📊 監控進程已啟動 (PID: $MONITOR_PID)"
+          
+          # 等待5分鐘
+          for i in {1..20}; do
+            sleep 15
+            echo "⏳ 監控運行中... ($((i*15)) 秒)"
+            
+            # 檢查進程是否還在運行
+            if ! kill -0 $MONITOR_PID 2>/dev/null; then
+              echo "⚠️  監控進程意外停止"
+              break
+            fi
+          done
+          
+          # 停止監控
+          echo "🛑 停止監控進程..."
+          kill $MONITOR_PID 2>/dev/null || true
+          
+          # 顯示日誌
           echo ""
-          echo "Possible issues:"
-          echo "1. Check for syntax errors in dusk_monitor.py"
-          echo "2. Ensure all required Python libraries are installed"
-          echo "3. Verify GitHub Secrets are correctly set"
-          echo "4. Test locally: python dusk_monitor.py"
+          echo "📄 監控日誌輸出:"
+          echo "================"
+          tail -50 monitor_output.log || echo "無日誌輸出"
+          
+          echo "✅ 監控運行完成"
+          
+          # 檢查是否有錯誤
+          if grep -q "❌\|ERROR\|Error\|error" monitor_output.log; then
+            echo "result=error" >> $GITHUB_OUTPUT
+            echo "errors=true" >> $GITHUB_OUTPUT
+          else
+            echo "result=success" >> $GITHUB_OUTPUT
+            echo "errors=false" >> $GITHUB_OUTPUT
+          fi
       
-      - name: Success notification
-        if: success()
+      - name: 💾 保存監控日誌
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: monitor-logs
+          path: |
+            monitor_output.log
+            *.log
+          retention-days: 7
+      
+      - name: 📧 發送執行報告
+        if: always()
+        env:
+          # 使用不同的Telegram配置發送報告（可選）
+          REPORT_TOKEN: ${{ secrets.REPORT_TOKEN || secrets.TG_TOKEN }}
+          REPORT_CHAT_ID: ${{ secrets.REPORT_CHAT_ID || secrets.TG_CHAT_ID }}
         run: |
-          echo "✅ Monitor job completed successfully"
-          echo "🔄 Next run: in 1 minute"
+          echo "📧 生成執行報告..."
+          
+          # 創建報告內容
+          REPORT="🚀 DUSK/USDT 監控系統執行報告\n\n"
+          REPORT+="⏰ 執行時間: $(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')\n"
+          REPORT+="📊 執行結果: ${{ steps.monitor.outputs.result || 'unknown' }}\n"
+          REPORT+="❌ 是否有錯誤: ${{ steps.monitor.outputs.errors || 'unknown' }}\n"
+          REPORT+="🏦 交易所數量: 6 家\n"
+          REPORT+="🔗 工作流: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n"
+          
+          # 如果有錯誤，添加詳細信息
+          if [ "${{ steps.monitor.outputs.errors }}" = "true" ]; then
+            REPORT+="\n⚠️  檢測到錯誤，請檢查日誌。\n"
+          fi
+          
+          echo "$REPORT"
+          
+          # 可選：發送到Telegram
+          if [ -n "$REPORT_TOKEN" ] && [ -n "$REPORT_CHAT_ID" ]; then
+            echo "📤 發送報告到Telegram..."
+            curl -s -X POST "https://api.telegram.org/bot$REPORT_TOKEN/sendMessage" \
+              -d chat_id="$REPORT_CHAT_ID" \
+              -d text="$REPORT" \
+              -d parse_mode="Markdown" \
+              --max-time 10 || echo "⚠️  報告發送失敗"
+          else
+            echo "⚠️  未配置報告Token，跳過發送"
+          fi
+
+  # 第三步：清理和通知（可選）
+  cleanup:
+    name: 🧹 清理
+    needs: [test-system, run-monitor]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📋 顯示最終報告
+        run: |
+          echo "📋 DUSK/USDT 監控工作流執行完成"
+          echo "================================"
+          echo "工作流: $GITHUB_WORKFLOW"
+          echo "運行ID: $GITHUB_RUN_ID"
+          echo "觸發者: $GITHUB_ACTOR"
+          echo "觸發事件: $GITHUB_EVENT_NAME"
+          echo "測試結果: ${{ needs.test-system.result }}"
+          echo "監控結果: ${{ needs.run-monitor.result }}"
+          echo "完成時間: $(date)"
+          echo "台灣時間: $(TZ='Asia/Taipei' date)"
+      
+      - name: 📊 工作流狀態
+        if: always()
+        run: |
+          # 計算總體狀態
+          TEST_STATUS="${{ needs.test-system.result }}"
+          MONITOR_STATUS="${{ needs.run-monitor.result }}"
+          
+          if [ "$TEST_STATUS" = "success" ] && [ "$MONITOR_STATUS" = "success" ]; then
+            echo "🎉 工作流執行成功"
+            echo "status=success" >> $GITHUB_OUTPUT
+          elif [ "$TEST_STATUS" = "failure" ]; then
+            echo "❌ 測試階段失敗"
+            echo "status=failure" >> $GITHUB_OUTPUT
+          elif [ "$MONITOR_STATUS" = "failure" ] || [ "$MONITOR_STATUS" = "cancelled" ]; then
+            echo "⚠️  監控階段失敗或被取消"
+            echo "status=warning" >> $GITHUB_OUTPUT
+          else
+            echo "❓ 未知狀態"
+            echo "status=unknown" >> $GITHUB_OUTPUT
+          fi
