@@ -1,0 +1,63 @@
+name: 🔍 测试交易所IP连通性
+
+on:
+  workflow_dispatch: # 这允许您在 GitHub 界面上手动点击运行此任务
+
+jobs:
+  test-ip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # 步骤1：检出仓库代码（获取脚本执行环境）
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 步骤2：设置Python环境
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # 步骤3：安装必要的Python库（仅ccxt）
+      - name: Install dependencies
+        run: pip install ccxt
+
+      # 步骤4：执行IP连通性测试脚本
+      - name: Run IP Connectivity Test
+        run: |
+          python << 'EOF'
+          import ccxt
+          import time
+
+          def test_connection(exchange_name):
+              try:
+                  exchange = getattr(ccxt, exchange_name.lower())()
+                  exchange.fetch_time()
+                  return True
+              except ccxt.NetworkError:
+                  return False
+              except Exception:
+                  return False
+
+          exchanges = [
+              'binanceus',
+              'kucoin',
+              'gateio',
+              'mexc',
+              'huobi',
+              'bitget',
+              'okx'
+          ]
+
+          print("开始IP连通性测试...\\n")
+          print("=" * 40)
+
+          for exchange in exchanges:
+              time.sleep(1)
+              status = "可达" if test_connection(exchange) else "拒绝"
+              print(f"{exchange:15} -> {status}")
+
+          print("=" * 40)
+          print("测试结束")
+          EOF
