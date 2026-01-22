@@ -14,7 +14,7 @@ on:
         default: 'false'
         type: boolean
 
-# 并发控制
+# 并发控制 - 确保每分钟只有一个实例运行
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 1  # 限制每次运行不超过1分钟
     
     steps:
       - name: 检出代码
@@ -42,31 +42,11 @@ jobs:
           pip install requests python-dotenv pandas ccxt python-telegram-bot schedule
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       
-      - name: 调试 - 查看所有可用Secrets
-        run: |
-          echo "=== 调试：环境变量设置情况 ==="
-          echo "注：Secret值不会显示，只显示名称"
-          echo ""
-          echo "1. 尝试读取可能的TRADE_SYMBOL相关Secret："
-          echo "   GitHub Secret名称可能是：TRADE_SYM, TRADE_SYMBOL, 或其他"
-          echo ""
-          echo "2. 当前工作流配置的环境变量："
-          echo "   TG_TOKEN: ${{ secrets.TG_TOKEN != '' && '已设置' || '未设置' }}"
-          echo "   TG_CHAT_ID: ${{ secrets.TG_CHAT_ID != '' && '已设置' || '未设置' }}"
-          echo "   TRADE_SYM: ${{ secrets.TRADE_SYM != '' && '已设置' || '未设置' }}"
-          echo ""
-          echo "3. 尝试不同名称的Secret："
-          echo "   TRADE_SYM 存在: ${{ secrets.TRADE_SYM != '' && '是' || '否' }}"
-          echo "   TRADE_SYMBOL 存在: ${{ secrets.TRADE_SYMBOL != '' && '是' || '否' }}"
-      
       - name: 运行DUSKUSDT监控
         env:
-          # Telegram 配置
+          # 脚本所需环境变量
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          
-          # 交易对配置 - 尝试多种可能的Secret名称
-          # 使用逻辑：如果TRADE_SYMBOL存在就使用，否则使用TRADE_SYM，否则使用默认值
           TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL || secrets.TRADE_SYM || 'DUSKUSDT' }}
           
           # 调试模式
@@ -77,46 +57,63 @@ jobs:
           echo "开始时间: $(date)"
           echo "触发方式: ${{ github.event_name }}"
           echo "调试模式: $DEBUG_MODE"
+          echo "交易对: $TRADE_SYMBOL"
           echo ""
           
-          echo "=== 环境变量检查 ==="
-          # 检查TG_TOKEN
-          if [ -n "$TG_TOKEN" ]; then
-            echo "✅ TG_TOKEN: 已设置 (长度: ${#TG_TOKEN})"
-          else
-            echo "❌ TG_TOKEN: 未设置"
+          # 验证环境变量
+          if [ -z "$TG_TOKEN" ]; then
+            echo "❌ 错误: TG_TOKEN 未设置"
             exit 1
           fi
           
-          # 检查TG_CHAT_ID
-          if [ -n "$TG_CHAT_ID" ]; then
-            echo "✅ TG_CHAT_ID: $TG_CHAT_ID"
-          else
-            echo "❌ TG_CHAT_ID: 未设置"
+          if [ -z "$TG_CHAT_ID" ]; then
+            echo "❌ 错误: TG_CHAT_ID 未设置"
             exit 1
           fi
           
-          # 检查TRADE_SYMBOL
-          if [ -n "$TRADE_SYMBOL" ]; then
-            echo "✅ TRADE_SYMBOL: $TRADE_SYMBOL"
-          else
-            echo "❌ TRADE_SYMBOL: 未设置"
+          if [ -z "$TRADE_SYMBOL" ]; then
+            echo "❌ 错误: TRADE_SYMBOL 未设置"
             exit 1
           fi
           
+          echo "✅ 环境变量检查通过"
           echo ""
-          echo "=== 运行监控脚本 ==="
           
-          # 验证脚本文件
-          if [ ! -f "dusk_monitor.py" ]; then
-            echo "❌ 错误: 找不到 dusk_monitor.py"
-            echo "当前目录文件:"
-            ls -la
-            exit 1
-          fi
+          # 创建单次执行版本
+          echo "创建单次执行脚本..."
+          cat > run_single_check.py << 'EOF'
+import os
+import sys
+
+# 修改原始脚本的导入
+original_script = open("dusk_monitor.py", "r", encoding="utf-8").read()
+
+# 修改脚本，让它只执行一次
+modified_script = original_script.replace(
+    "while True:",
+    "# 修改为单次执行\nif True:"
+)
+
+# 添加强制退出，避免等待
+modified_script = modified_script.replace(
+    "等待到下一個分鐘的00秒...",
+    "单次执行完成，退出程序..."
+)
+
+modified_script = modified_script.replace(
+    "等待 55 秒直到下一分鐘整點",
+    "单次执行完成，退出程序"
+)
+
+# 在脚本最后添加sys.exit(0)
+if "sys.exit(0)" not in modified_script:
+    modified_script += "\n\n# 单次执行完成\nprint('✅ 单次检查完成，退出程序')\nsys.exit(0)"
+
+exec(modified_script)
+EOF
           
-          # 运行监控脚本
-          python dusk_monitor.py
+          echo "执行单次检查..."
+          python run_single_check.py
           
           EXIT_CODE=$?
           echo ""
@@ -141,6 +138,10 @@ jobs:
           echo "2. 确认所有必要的Python库都已安装"
           echo "3. 检查环境变量是否正确设置"
           echo "4. 尝试本地运行: python dusk_monitor.py"
+          echo ""
+          echo "💡 建议:"
+          echo "- 修改脚本为单次执行模式"
+          echo "- 或者使用更简单的方案：直接运行脚本并用timeout限制"
       
       - name: 成功通知
         if: success()
