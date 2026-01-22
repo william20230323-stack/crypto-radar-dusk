@@ -37,17 +37,13 @@ last_alert_time = {"BUY_IN_RED": 0, "SELL_IN_GREEN": 0, "VOLUME_SPIKE": 0}
 last_processed_kline_time = 0
 
 class BinanceAPI:
-    """幣安API客戶端（支援國際版和美國版）"""
+    """幣安API客戶端（僅使用美國版）"""
     def __init__(self):
-        # 多個API端點，優先嘗試美國版，再嘗試國際版
+        # ⚠️ 重要修改：僅使用可用的美國幣安API端點
         self.base_urls = [
-            "https://api.binance.us/api/v3",  # 美國版
-            "https://api1.binance.us/api/v3",
-            "https://api2.binance.us/api/v3",
-            "https://api.binance.com/api/v3",  # 國際版（備用）
-            "https://api1.binance.com/api/v3",
-            "https://api2.binance.com/api/v3",
-            "https://api3.binance.com/api/v3",
+            "https://api.binance.us/api/v3",    # 主站（診斷確認可用）
+            "https://api1.binance.us/api/v3",   # 備用節點1
+            "https://api2.binance.us/api/v3",   # 備用節點2
         ]
         self.current_base = 0
         self.session = requests.Session()
@@ -55,21 +51,18 @@ class BinanceAPI:
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-MBX-APIKEY": ""
+            "Origin": "https://www.binance.us",  # ⚠️ 改為美國版官網
+            "Referer": "https://www.binance.us/" # ⚠️ 改為美國版官網
         })
         self.last_request_time = 0
         self.request_count = 0
         self.reset_time = time.time()
-        self.api_type = "未知"  # 用於標記當前使用的API類型
+        self.api_type = "美國版"  # ⚠️ 直接標記為美國版
     
     def rotate_base_url(self):
         """輪換API端點"""
         self.current_base = (self.current_base + 1) % len(self.base_urls)
         url = self.base_urls[self.current_base]
-        if "binance.us" in url:
-            self.api_type = "美國版"
-        else:
-            self.api_type = "國際版"
         print(f"🔄 輪換到 {self.api_type} API端點 ({self.current_base + 1}/{len(self.base_urls)})")
     
     def check_rate_limit(self):
@@ -378,7 +371,7 @@ def check_alert_conditions(market_data: dict):
 
 ⏰ <b>K線時間:</b> {kline_time_str}
 📡 <b>警報時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance API
+🔗 <b>數據來源:</b> Binance.US API
 """
         return True, "BUY_IN_RED", message
     
@@ -398,7 +391,7 @@ def check_alert_conditions(market_data: dict):
 
 ⏰ <b>K線時間:</b> {kline_time_str}
 📡 <b>警報時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance API
+🔗 <b>數據來源:</b> Binance.US API
 """
         return True, "SELL_IN_GREEN", message
     
@@ -418,7 +411,7 @@ def check_alert_conditions(market_data: dict):
 
 ⏰ <b>K線時間:</b> {kline_time_str}
 📡 <b>警報時間:</b> {current_time}
-🔗 <b>數據來源:</b> Binance API
+🔗 <b>數據來源:</b> Binance.US API
 """
         return True, "VOLUME_SPIKE", message
     
@@ -447,7 +440,7 @@ def print_banner():
     print(f"🔄 檢查間隔: 每分鐘00秒整點執行")
     print(f"🔔 通知模式: 僅異常時發送")
     print(f"⏱️  警報冷卻: {ALERT_COOLDOWN}秒")
-    print(f"🌐 API類型: 自動選擇（美國版/國際版）")
+    print(f"🌐 API類型: 美國版 (Binance.US)")
     print("=" * 70)
     print(f"📈 警報閾值設定:")
     print(f"   買賣比率: >{BUY_SELL_THRESHOLD:.1f}")
@@ -494,8 +487,8 @@ def real_time_monitor():
         error_msg = f"""
 ❌ <b>{SYMBOL} 監控系統啟動失敗</b>
 
-交易對 {SYMBOL} 在當前可用的 API 端點不可用。
-請確認該交易對在幣安是否存在。
+交易對 {SYMBOL} 在 Binance.US 不可用。
+請確認該交易對在美國幣安是否存在。
 
 🕐 時間: {datetime.now().strftime('%H:%M:%S')}
 """
