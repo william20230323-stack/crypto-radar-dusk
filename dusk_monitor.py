@@ -6,7 +6,6 @@ import requests
 from datetime import datetime, timedelta
 import random
 import traceback
-import math
 
 # 從環境變數讀取設定
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -449,7 +448,7 @@ def print_banner():
     print("=" * 70)
 
 def wait_until_next_minute():
-    """等待到下一個分鐘的00秒"""
+    """等待到下一個分鐘的00秒（優化版）"""
     now = datetime.now()
     current_second = now.second
     current_microsecond = now.microsecond
@@ -457,21 +456,20 @@ def wait_until_next_minute():
     # 計算到下一分鐘00秒需要等待的時間
     seconds_to_wait = 60 - current_second
     
-    # 如果現在就是00秒（或非常接近），則直接返回
-    if seconds_to_wait <= 1:
+    # 優化：如果等待時間超過55秒，說明剛過整點不久，此時可以選擇不等滿
+    # 或者為了數據一致性，依然等待。這裡我們選擇如果超過55秒則只等5秒。
+    if seconds_to_wait > 55:
+        seconds_to_wait = 5  # 改為只等待5秒，快速進入下一輪
+        print(f"⏳ 剛過整點，縮短等待至 {seconds_to_wait} 秒...")
+    elif seconds_to_wait <= 1:
         if seconds_to_wait > 0:
-            # 微調，確保在00秒時執行
             time.sleep(seconds_to_wait)
         return
+    else:
+        next_minute_time = (now + timedelta(seconds=seconds_to_wait)).strftime("%H:%M:%S")
+        print(f"⏳ 等待 {seconds_to_wait} 秒直到下一分鐘整點 ({next_minute_time})...")
     
-    # 顯示等待信息
-    next_minute_time = (now + timedelta(seconds=seconds_to_wait)).strftime("%H:%M:%S")
-    print(f"⏳ 等待 {seconds_to_wait} 秒直到下一分鐘整點 ({next_minute_time})...")
-    
-    # 等待到下一個分鐘的00秒
     time.sleep(seconds_to_wait)
-    
-    # 微調，確保精確對齊
     time.sleep(0.01)  # 10毫秒微調
 
 def real_time_monitor():
@@ -523,9 +521,8 @@ def real_time_monitor():
     alert_count = 0
     error_count = 0
     
-    # 第一次執行前等待到下一分鐘整點
-    print("\n⏳ 首次執行，等待到下一個分鐘的00秒...")
-    wait_until_next_minute()
+    # ⚠️ 優化：首次執行前跳過等待，立即開始檢查
+    print("\n🚀 首次執行，立即開始檢查（跳過初始等待）...")
     
     # 主監控循環
     try:
