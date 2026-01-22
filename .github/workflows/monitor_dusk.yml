@@ -1,4 +1,4 @@
-name: DUSKUSDT 1-Minute Monitor
+name: 'DUSKUSDT 1-Minute Monitor'
 
 on:
   # 定时触发 - 每分钟一次
@@ -22,130 +22,88 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 1  # 限制每次运行不超过1分钟
+    timeout-minutes: 2
     
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
       
-      - name: 设置Python环境
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       
-      - name: 安装依赖
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests python-dotenv pandas ccxt python-telegram-bot schedule
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       
-      - name: 运行DUSKUSDT监控
+      - name: Run DUSKUSDT Monitor
         env:
-          # 脚本所需环境变量
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TRADE_SYMBOL: ${{ secrets.TRADE_SYMBOL || secrets.TRADE_SYM || 'DUSKUSDT' }}
-          
-          # 调试模式
           DEBUG_MODE: ${{ inputs.debug_mode || 'false' }}
           PYTHONUNBUFFERED: '1'
         run: |
-          echo "=== DUSKUSDT加密货币监控 ==="
-          echo "开始时间: $(date)"
-          echo "触发方式: ${{ github.event_name }}"
-          echo "调试模式: $DEBUG_MODE"
-          echo "交易对: $TRADE_SYMBOL"
+          echo "=== DUSKUSDT Cryptocurrency Monitor ==="
+          echo "Start time: $(date)"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Debug mode: $DEBUG_MODE"
+          echo "Trading pair: $TRADE_SYMBOL"
           echo ""
           
           # 验证环境变量
           if [ -z "$TG_TOKEN" ]; then
-            echo "❌ 错误: TG_TOKEN 未设置"
+            echo "❌ ERROR: TG_TOKEN not set"
             exit 1
           fi
           
           if [ -z "$TG_CHAT_ID" ]; then
-            echo "❌ 错误: TG_CHAT_ID 未设置"
+            echo "❌ ERROR: TG_CHAT_ID not set"
             exit 1
           fi
           
-          if [ -z "$TRADE_SYMBOL" ]; then
-            echo "❌ 错误: TRADE_SYMBOL 未设置"
-            exit 1
-          fi
-          
-          echo "✅ 环境变量检查通过"
+          echo "✅ Environment variables verified"
           echo ""
           
-          # 创建单次执行版本
-          echo "创建单次执行脚本..."
-          cat > run_single_check.py << 'EOF'
-import os
-import sys
-
-# 修改原始脚本的导入
-original_script = open("dusk_monitor.py", "r", encoding="utf-8").read()
-
-# 修改脚本，让它只执行一次
-modified_script = original_script.replace(
-    "while True:",
-    "# 修改为单次执行\nif True:"
-)
-
-# 添加强制退出，避免等待
-modified_script = modified_script.replace(
-    "等待到下一個分鐘的00秒...",
-    "单次执行完成，退出程序..."
-)
-
-modified_script = modified_script.replace(
-    "等待 55 秒直到下一分鐘整點",
-    "单次执行完成，退出程序"
-)
-
-# 在脚本最后添加sys.exit(0)
-if "sys.exit(0)" not in modified_script:
-    modified_script += "\n\n# 单次执行完成\nprint('✅ 单次检查完成，退出程序')\nsys.exit(0)"
-
-exec(modified_script)
-EOF
-          
-          echo "执行单次检查..."
-          python run_single_check.py
+          # 运行脚本，使用timeout确保不会无限等待
+          # 30秒足够执行一次检查，然后强制退出
+          echo "Running monitor script (timeout: 30s)..."
+          timeout 30 python dusk_monitor.py
           
           EXIT_CODE=$?
           echo ""
-          echo "=== 执行结果 ==="
-          echo "脚本退出代码: $EXIT_CODE"
-          echo "结束时间: $(date)"
           
+          # 处理不同的退出代码
           if [ $EXIT_CODE -eq 0 ]; then
-            echo "✅ 监控执行成功"
+            echo "✅ Script completed successfully"
+          elif [ $EXIT_CODE -eq 124 ]; then
+            echo "⚠️ Script timed out (expected, prevents waiting 55 seconds)"
           else
-            echo "❌ 监控执行失败"
+            echo "❌ Script failed with exit code: $EXIT_CODE"
             exit $EXIT_CODE
           fi
+          
+          echo "End time: $(date)"
       
-      - name: 错误处理
+      - name: Handle failure
         if: failure()
         run: |
-          echo "❌ 监控任务失败"
+          echo "❌ Monitor job failed"
           echo ""
-          echo "常见问题:"
-          echo "1. 检查 dusk_monitor.py 脚本是否有语法错误"
-          echo "2. 确认所有必要的Python库都已安装"
-          echo "3. 检查环境变量是否正确设置"
-          echo "4. 尝试本地运行: python dusk_monitor.py"
-          echo ""
-          echo "💡 建议:"
-          echo "- 修改脚本为单次执行模式"
-          echo "- 或者使用更简单的方案：直接运行脚本并用timeout限制"
+          echo "Possible issues:"
+          echo "1. Check for syntax errors in dusk_monitor.py"
+          echo "2. Ensure all required Python libraries are installed"
+          echo "3. Verify GitHub Secrets are correctly set"
+          echo "4. Test locally: python dusk_monitor.py"
       
-      - name: 成功通知
+      - name: Success notification
         if: success()
         run: |
-          echo "✅ 监控任务执行成功"
-          echo "🔄 下次自动运行: 1分钟后"
-          echo "📊 运行ID: ${{ github.run_id }}"
+          echo "✅ Monitor job completed successfully"
+          echo "🔄 Next run: in 1 minute"
