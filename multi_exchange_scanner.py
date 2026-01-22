@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-多交易所並發掃描器 - 簡化版
+多交易所並發掃描器 - 增強版
 以台灣時間為準，每15秒掃描6家交易所最新K線
+包含真實的買賣數據
 """
 
 import asyncio
@@ -18,8 +19,8 @@ from config import (
 )
 
 @dataclass
-class SimpleKlineData:
-    """簡化的K線數據結構"""
+class EnhancedKlineData:
+    """增強版K線數據結構（包含買賣數據）"""
     exchange: str
     symbol: str
     open: float
@@ -27,9 +28,29 @@ class SimpleKlineData:
     low: float
     close: float
     volume: float
+    buy_volume: float = 0.0  # 主動買入量
+    sell_volume: float = 0.0  # 主動賣出量
     is_red: bool = False
     is_green: bool = False
-    fetch_time: datetime = None  # 台灣時間的獲取時間
+    fetch_time: datetime = None
+    
+    @property
+    def buy_sell_ratio(self) -> float:
+        """計算買賣比率"""
+        if self.sell_volume > 0:
+            return self.buy_volume / self.sell_volume
+        elif self.buy_volume > 0:
+            return 99.0  # 只有買入
+        return 1.0
+    
+    @property
+    def sell_buy_ratio(self) -> float:
+        """計算賣買比率"""
+        if self.buy_volume > 0:
+            return self.sell_volume / self.buy_volume
+        elif self.sell_volume > 0:
+            return 99.0  # 只有賣出
+        return 1.0
     
     def __post_init__(self):
         """初始化後計算K線顏色"""
@@ -38,160 +59,273 @@ class SimpleKlineData:
         if self.fetch_time is None:
             self.fetch_time = get_taiwan_time()
 
-class SimpleExchangeScanner:
-    """簡化版交易所掃描器"""
+class EnhancedExchangeScanner:
+    """增強版交易所掃描器（包含買賣數據）"""
     
     def __init__(self):
         self.session = None
-        self.last_scan = None
         
     async def __aenter__(self):
-        """異步上下文管理器入口"""
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
         )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """異步上下文管理器出口"""
         if self.session:
             await self.session.close()
     
-    async def fetch_single_exchange(self, exchange_id: str) -> Optional[SimpleKlineData]:
-        """獲取單一交易所的最新K線數據"""
+    async def fetch_single_exchange(self, exchange_id: str) -> Optional[EnhancedKlineData]:
+        """獲取單一交易所的最新K線數據（包含買賣數據）"""
         exchange_config = EXCHANGES[exchange_id]
+        exchange_name = exchange_config['name']
         
         try:
-            # 根據不同交易所構建API請求
+            # 根據不同交易所使用不同的API
             if exchange_id == "coinbase":
-                # Coinbase - 需要特殊處理，可能用ticker
-                url = f"{exchange_config['api_base']}/v2/prices/{SYMBOL}/spot"
-                async with self.session.get(url, timeout=10) as response:
+                # Coinbase - 使用Ticker和交易紀錄
+                # 先獲取價格
+                ticker_url = f"{exchange_config['api_base']}/v2/prices/DUSK-USD/spot"
+                async with self.session.get(ticker_url, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
                         price = float(data['data']['amount'])
-                        return SimpleKlineData(
-                            exchange=exchange_config['name'],
+                        
+                        # Coinbase可能不提供實時買賣數據
+                        return EnhancedKlineData(
+                            exchange=exchange_name,
                             symbol=SYMBOL,
-                            open=price,  # 簡化：用當前價作為open/close
+                            open=price,
                             high=price,
                             low=price,
                             close=price,
-                            volume=0  # Coinbase可能不提供實時成交量
+                            volume=0,
+                            buy_volume=0,
+                            sell_volume=0
                         )
             
             elif exchange_id == "kraken":
-                # Kraken
-                pair = "DUSKUSD"  # 需要確認實際交易對
-                url = f"{exchange_config['api_base']}/0/public/Ticker"
-                params = {"pair": pair}
-                async with self.session.get(url, params=params, timeout=10) as response:
+                # Kraken - 使用Trades API獲取買賣數據
+                pair = "DUSKUSD"
+                url = f"{exchange_config['api_base']}/0/public/Trades"
+                params = {"pair": pair, "count": 100}  # 獲取最近100筆交易
+                
+                async with self.session.get(url, params=params, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
-                        result = data['result'][pair]
-                        return SimpleKlineData(
-                            exchange=exchange_config['name'],
-                            symbol=SYMBOL,
-                            open=float(result['o']),
-                            high=float(result['h'][0]),
-                            low=float(result['l'][0]),
-                            close=float(result['c'][0]),
-                            volume=float(result['v'][0])
-                        )
+                        trades = data['result'][pair]
+                        
+                        # 分析最近交易
+                        buy_volume = 0.0
+                        sell_volume = 0.0
+                        total_volume = 0.0
+                        prices = []
+                        
+                        for trade in trades[-50:]:  # 分析最近50筆
+                            price = float(trade[0])
+                            volume = float(trade[1])
+                            side = trade[3]  # 'b' = buy, 's' = sell
+                            
+                            prices.append(price)
+                            total_volume += volume
+                            
+                            if side == 'b':
+                                buy_volume += volume
+                            elif side == 's':
+                                sell_volume += volume
+                        
+                        if prices:
+                            current_price = prices[-1]
+                            min_price = min(prices)
+                            max_price = max(prices)
+                            
+                            return EnhancedKlineData(
+                                exchange=exchange_name,
+                                symbol=SYMBOL,
+                                open=prices[0],
+                                high=max_price,
+                                low=min_price,
+                                close=current_price,
+                                volume=total_volume,
+                                buy_volume=buy_volume,
+                                sell_volume=sell_volume
+                            )
             
             elif exchange_id == "okx":
-                # OKX
-                url = f"{exchange_config['api_base']}/api/v5/market/ticker"
+                # OKX - 使用Tickers和Trades
+                # 獲取Ticker
+                ticker_url = f"{exchange_config['api_base']}/api/v5/market/ticker"
                 params = {"instId": "DUSK-USDT"}
-                async with self.session.get(url, params=params, timeout=10) as response:
+                
+                async with self.session.get(ticker_url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
                         ticker = data['data'][0]
-                        return SimpleKlineData(
-                            exchange=exchange_config['name'],
-                            symbol=SYMBOL,
-                            open=float(ticker['open24h']),
-                            high=float(ticker['high24h']),
-                            low=float(ticker['low24h']),
-                            close=float(ticker['last']),
-                            volume=float(ticker['vol24h'])
-                        )
+                        
+                        # 獲取最近交易
+                        trades_url = f"{exchange_config['api_base']}/api/v5/market/trades"
+                        async with self.session.get(trades_url, params=params, timeout=10) as resp2:
+                            trades_data = await resp2.json()
+                            
+                            # 分析交易方向
+                            buy_vol = 0.0
+                            sell_vol = 0.0
+                            
+                            if trades_data and 'data' in trades_data:
+                                for trade in trades_data['data'][-20:]:  # 最近20筆
+                                    side = trade['side']  # 'buy' or 'sell'
+                                    vol = float(trade['sz'])
+                                    
+                                    if side == 'buy':
+                                        buy_vol += vol
+                                    elif side == 'sell':
+                                        sell_vol += vol
+                            
+                            return EnhancedKlineData(
+                                exchange=exchange_name,
+                                symbol=SYMBOL,
+                                open=float(ticker['open24h']),
+                                high=float(ticker['high24h']),
+                                low=float(ticker['low24h']),
+                                close=float(ticker['last']),
+                                volume=float(ticker['vol24h']),
+                                buy_volume=buy_vol,
+                                sell_volume=sell_vol
+                            )
             
             elif exchange_id == "bybit":
-                # Bybit
-                url = f"{exchange_config['api_base']}/v5/market/tickers"
+                # Bybit - 使用Ticker和Recent Trades
+                ticker_url = f"{exchange_config['api_base']}/v5/market/tickers"
                 params = {"category": "spot", "symbol": "DUSKUSDT"}
-                async with self.session.get(url, params=params, timeout=10) as response:
+                
+                async with self.session.get(ticker_url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        ticker = data['result']['list'][0]
-                        return SimpleKlineData(
-                            exchange=exchange_config['name'],
-                            symbol=SYMBOL,
-                            open=float(ticker['openPrice']),
-                            high=float(ticker['highPrice24h']),
-                            low=float(ticker['lowPrice24h']),
-                            close=float(ticker['lastPrice']),
-                            volume=float(ticker['volume24h'])
-                        )
+                        if data['retCode'] == 0 and data['result']['list']:
+                            ticker = data['result']['list'][0]
+                            
+                            # 獲取最近交易
+                            trades_url = f"{exchange_config['api_base']}/v5/market/recent-trade"
+                            async with self.session.get(trades_url, params=params, timeout=10) as resp2:
+                                trades_data = await resp2.json()
+                                
+                                buy_vol = 0.0
+                                sell_vol = 0.0
+                                
+                                if trades_data['retCode'] == 0:
+                                    for trade in trades_data['result']['list'][-20:]:
+                                        side = trade['side']
+                                        vol = float(trade['size'])
+                                        
+                                        if side == 'Buy':
+                                            buy_vol += vol
+                                        elif side == 'Sell':
+                                            sell_vol += vol
+                                
+                                return EnhancedKlineData(
+                                    exchange=exchange_name,
+                                    symbol=SYMBOL,
+                                    open=float(ticker['openPrice']),
+                                    high=float(ticker['highPrice24h']),
+                                    low=float(ticker['lowPrice24h']),
+                                    close=float(ticker['lastPrice']),
+                                    volume=float(ticker['volume24h']),
+                                    buy_volume=buy_vol,
+                                    sell_volume=sell_vol
+                                )
             
             elif exchange_id == "gateio":
-                # Gate.io
-                url = f"{exchange_config['api_base']}/api/v4/spot/tickers"
+                # Gate.io - 使用Ticker和Trades
+                ticker_url = f"{exchange_config['api_base']}/api/v4/spot/tickers"
                 params = {"currency_pair": "DUSK_USDT"}
-                async with self.session.get(url, params=params, timeout=10) as response:
+                
+                async with self.session.get(ticker_url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
                         ticker = data[0]
-                        return SimpleKlineData(
-                            exchange=exchange_config['name'],
-                            symbol=SYMBOL,
-                            open=float(ticker['open']),
-                            high=float(ticker['high_24h']),
-                            low=float(ticker['low_24h']),
-                            close=float(ticker['last']),
-                            volume=float(ticker['quote_volume'])
-                        )
+                        
+                        # 獲取最近交易
+                        trades_url = f"{exchange_config['api_base']}/api/v4/spot/trades"
+                        async with self.session.get(trades_url, params=params, timeout=10) as resp2:
+                            trades_data = await resp2.json()
+                            
+                            buy_vol = 0.0
+                            sell_vol = 0.0
+                            
+                            for trade in trades_data[-20:]:
+                                side = trade['side']  # 'buy' or 'sell'
+                                vol = float(trade['amount'])
+                                
+                                if side == 'buy':
+                                    buy_vol += vol
+                                elif side == 'sell':
+                                    sell_vol += vol
+                            
+                            return EnhancedKlineData(
+                                exchange=exchange_name,
+                                symbol=SYMBOL,
+                                open=float(ticker['open']),
+                                high=float(ticker['high_24h']),
+                                low=float(ticker['low_24h']),
+                                close=float(ticker['last']),
+                                volume=float(ticker['quote_volume']),
+                                buy_volume=buy_vol,
+                                sell_volume=sell_vol
+                            )
             
             elif exchange_id == "mexc":
-                # MEXC
-                url = f"{exchange_config['api_base']}/api/v3/ticker/24hr"
+                # MEXC - 使用Ticker和Recent Trades
+                ticker_url = f"{exchange_config['api_base']}/api/v3/ticker/24hr"
                 params = {"symbol": "DUSKUSDT"}
-                async with self.session.get(url, params=params, timeout=10) as response:
+                
+                async with self.session.get(ticker_url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        return SimpleKlineData(
-                            exchange=exchange_config['name'],
-                            symbol=SYMBOL,
-                            open=float(data['openPrice']),
-                            high=float(data['highPrice']),
-                            low=float(data['lowPrice']),
-                            close=float(data['lastPrice']),
-                            volume=float(data['volume'])
-                        )
+                        
+                        # 獲取最近交易
+                        trades_url = f"{exchange_config['api_base']}/api/v3/trades"
+                        async with self.session.get(trades_url, params=params, timeout=10) as resp2:
+                            trades_data = await resp2.json()
+                            
+                            buy_vol = 0.0
+                            sell_vol = 0.0
+                            
+                            for trade in trades_data[-20:]:
+                                is_buyer_maker = trade['isBuyerMaker']
+                                vol = float(trade['qty'])
+                                
+                                if not is_buyer_maker:  # 買方主動
+                                    buy_vol += vol
+                                else:  # 賣方主動
+                                    sell_vol += vol
+                            
+                            return EnhancedKlineData(
+                                exchange=exchange_name,
+                                symbol=SYMBOL,
+                                open=float(data['openPrice']),
+                                high=float(data['highPrice']),
+                                low=float(data['lowPrice']),
+                                close=float(data['lastPrice']),
+                                volume=float(data['volume']),
+                                buy_volume=buy_vol,
+                                sell_volume=sell_vol
+                            )
             
             return None
             
         except Exception as e:
-            print(f"❌ {exchange_config['name']} 請求失敗: {str(e)[:50]}")
+            print(f"❌ {exchange_name} 請求失敗: {str(e)[:80]}")
             return None
     
-    async def scan_all_exchanges(self) -> Dict[str, SimpleKlineData]:
+    async def scan_all_exchanges(self) -> Dict[str, EnhancedKlineData]:
         """並發掃描所有交易所"""
         taiwan_now = get_taiwan_time()
         print(f"\n🔄 掃描開始 ({taiwan_now.strftime('%H:%M:%S')} 台灣時間)")
         print("=" * 60)
         
-        # 創建並發任務
-        tasks = []
-        for exchange_id in EXCHANGE_LIST:
-            task = self.fetch_single_exchange(exchange_id)
-            tasks.append(task)
-        
-        # 同時執行所有請求
+        tasks = [self.fetch_single_exchange(ex_id) for ex_id in EXCHANGE_LIST]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # 處理結果
         kline_data = {}
         successful = 0
         
@@ -206,76 +340,37 @@ class SimpleExchangeScanner:
             else:
                 kline_data[exchange_id] = result
                 successful += 1
+                
+                # 顯示買賣比率
+                ratio_info = ""
+                if result.buy_volume > 0 or result.sell_volume > 0:
+                    ratio_info = f" 買/賣: {result.buy_sell_ratio:.2f}"
+                
                 print(f"✅ {exchange_name}: ${result.close:.5f} "
-                      f"{'🔴' if result.is_red else '🟢'}")
+                      f"{'🔴' if result.is_red else '🟢'}{ratio_info}")
         
-        self.last_scan = taiwan_now
         print(f"📊 掃描完成: {successful}/{len(EXCHANGES)} 成功")
         print("=" * 60)
         
         return kline_data
-    
-    def check_alert_conditions(self, kline_data: Dict[str, SimpleKlineData], 
-                               minute_key: str) -> List[Dict]:
-        """檢查警報條件並過濾重複"""
-        alerts = []
-        taiwan_now = get_taiwan_time()
-        
-        # 獲取當前分鐘已觸發的交易所
-        triggered_exchanges = self.alert_minute_tracker.get(minute_key, [])
-        
-        for exchange_id, data in kline_data.items():
-            # 檢查是否已經觸發過
-            if exchange_id in triggered_exchanges:
-                continue
-            
-            exchange_name = EXCHANGES[exchange_id]['name']
-            
-            # 條件1: 陰線但大量買入（買/賣比 > 1.8）
-            # 注意：簡化版沒有買賣數據，這裡需要根據實際API調整
-            # 暫時用價格變化模擬
-            if data.is_red:
-                # 這裡應該用實際的買賣數據
-                alerts.append({
-                    "exchange": exchange_name,
-                    "exchange_id": exchange_id,
-                    "condition": "BUY_IN_RED",
-                    "data": data,
-                    "message": f"陰線中檢測到大量買入 ({exchange_name})"
-                })
-                triggered_exchanges.append(exchange_id)
-            
-            # 條件2: 陽線但大量賣出（賣/買比 > 1.8）
-            elif data.is_green:
-                alerts.append({
-                    "exchange": exchange_name,
-                    "exchange_id": exchange_id,
-                    "condition": "SELL_IN_GREEN",
-                    "data": data,
-                    "message": f"陽線中檢測到大量賣出 ({exchange_name})"
-                })
-                triggered_exchanges.append(exchange_id)
-        
-        # 更新分鐘追蹤器
-        if triggered_exchanges:
-            self.alert_minute_tracker[minute_key] = triggered_exchanges
-        
-        return alerts
 
-# 測試函數
-async def test_scanner():
-    """測試掃描器"""
-    print("🧪 測試多交易所掃描器...")
+async def test_enhanced_scanner():
+    """測試增強版掃描器"""
+    print("🧪 測試增強版多交易所掃描器...")
     
-    async with SimpleExchangeScanner() as scanner:
+    async with EnhancedExchangeScanner() as scanner:
         data = await scanner.scan_all_exchanges()
         
         if data:
-            print(f"\n📋 獲取到 {len(data)} 家交易所數據:")
+            print(f"\n📋 詳細數據:")
             for exchange_id, kline in data.items():
-                print(f"  {EXCHANGES[exchange_id]['name']}: "
-                      f"${kline.close:.5f} {kline.volume:,.0f}")
+                ex_name = EXCHANGES[exchange_id]['name']
+                print(f"\n  {ex_name}:")
+                print(f"    價格: ${kline.close:.5f}")
+                print(f"    買入量: {kline.buy_volume:.2f}")
+                print(f"    賣出量: {kline.sell_volume:.2f}")
+                print(f"    買賣比: {kline.buy_sell_ratio:.2f}")
+                print(f"    顏色: {'🔴陰線' if kline.is_red else '🟢陽線'}")
 
 if __name__ == "__main__":
-    # 運行測試
-    asyncio.run(test_scanner())
+    asyncio.run(test_enhanced_scanner())
