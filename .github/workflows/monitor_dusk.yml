@@ -39,7 +39,7 @@ jobs:
     
     steps:
       - name: 📥 檢出代碼
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # 也建議升級到 v4
       
       - name: 🐍 設置 Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v4
@@ -77,7 +77,7 @@ jobs:
       
       - name: 💾 保存測試日誌
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # 已升級到 v4
         with:
           name: test-logs
           path: |
@@ -97,7 +97,7 @@ jobs:
     
     steps:
       - name: 📥 檢出代碼
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # 已升級到 v4
       
       - name: 🐍 設置 Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v4
@@ -190,7 +190,7 @@ jobs:
       
       - name: 💾 保存監控日誌
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # 已升級到 v4
         with:
           name: monitor-logs
           path: |
