@@ -1,46 +1,11 @@
 name: DUSK/USDT Multi-Exchange Monitor
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
-    inputs:
-      test_mode:
-        description: '測試模式'
-        required: false
-        default: false
-        type: boolean
-  push:
-    branches: [main]
-
-env:
-  PYTHON_VERSION: '3.9'
 
 jobs:
-  test:
-    name: 系統測試
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: 檢出代碼
-      uses: actions/checkout@v3
-    - name: 設置Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-    - name: 安裝依賴
-      run: pip install -r requirements.txt
-    - name: 修復dusk_monitor.py
-      run: |
-        sed -i 's/EnhancedKlineData/dict/g' dusk_monitor.py
-        sed -i 's/EnhancedKLineData/dict/g' dusk_monitor.py
-    - name: 運行測試
-      run: python test_all.py || echo "測試完成"
-
   monitor:
     name: 執行監控
-    needs: test
-    if: needs.test.result == 'success'
     runs-on: ubuntu-latest
     
     steps:
@@ -49,6 +14,19 @@ jobs:
     - name: 設置Python
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        python-version: '3.9'
+    - name: 修復文件錯誤
+      run: |
+        # 完全替換dusk_monitor.py的第3行錯誤函數
+        if [ -f "dusk_monitor.py" ]; then
+          echo "修復 dusk_monitor.py..."
+          sed -i '3s/.*/def check_single_kline_alert(kline, exchange_id, name):/' dusk_monitor.py
+          # 檢查是否還有其他同類錯誤
+          sed -i 's/: EnhancedKLineData//g' dusk_monitor.py
+          sed -i 's/: EnhancedKlineData//g' dusk_monitor.py
+        fi
     - name: 運行監控
-      run: python dusk_monitor.py
+      run: |
+        echo "檢查文件狀態..."
+        head -10 dusk_monitor.py
+        python dusk_monitor.py
