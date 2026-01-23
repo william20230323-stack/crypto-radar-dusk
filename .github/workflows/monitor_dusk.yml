@@ -1,27 +1,80 @@
 name: DUSK/USDT Multi-Exchange Monitor
 
 on:
+  schedule:
+    - cron: '*/15 * * * *'
+  
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: '測試模式（不發送真實警報）'
+        required: false
+        default: 'false'
+        type: boolean
+  
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+
+env:
+  TG_TOKEN: ${{ secrets.TG_TOKEN }}
+  TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+  PYTHON_VERSION: '3.9'
+  CHECK_INTERVAL: '15'
 
 jobs:
-  monitor:
-    name: Run Monitor
+  test-system:
+    name: 🔍 系統測試
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: 📥 檢出代碼
+        uses: actions/checkout@v3
+      
+      - name: 🐍 設置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: 📦 安裝依賴
+        run: pip install -r requirements.txt
+      
+      - name: 🧪 運行測試
+        run: python test_all.py
+      
+      - name: 💾 保存日誌
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: *.log
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-
-    - name: Create simple monitor file
-      run: |
-        echo "# Simple monitor file" > dusk_monitor.py
-        echo "print('Monitor started successfully')" >> dusk_monitor.py
-        echo "print('Status: OK')" >> dusk_monitor.py
-
-    - name: Run monitor
-      run: python dusk_monitor.py
+  run-monitor:
+    name: 🚀 執行監控
+    needs: test-system
+    if: needs.test-system.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: 📥 檢出代碼
+        uses: actions/checkout@v3
+      
+      - name: 🐍 設置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: 📦 安裝依賴
+        run: pip install -r requirements.txt
+      
+      - name: 🚀 啟動監控
+        run: python dusk_monitor.py
+      
+      - name: 💾 保存日誌
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-logs
+          path: *.log
