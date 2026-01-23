@@ -1,36 +1,31 @@
 name: DUSK/USDT Multi-Exchange Monitor
 
 on:
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.9'
 
 jobs:
   monitor:
-    name: 執行監控
     runs-on: ubuntu-latest
-    
     steps:
-    - name: 檢出代碼
-      uses: actions/checkout@v3
-    - name: 設置Python
-      uses: actions/setup-python@v4
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
-    - name: 完全修復所有類型註解
+        python-version: ${{ env.PYTHON_VERSION }}
+    - run: pip install -r requirements.txt
+    - run: |
+        echo "檢查交易所連線..."
+        python -c "import ccxt; print('CCXT版本:', ccxt.__version__)"
+    - name: 發送啟動通知
+      env:
+        TG_TOKEN: ${{ secrets.TG_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: |
-        if [ -f "dusk_monitor.py" ]; then
-          echo "完整修復 dusk_monitor.py..."
-          # 移除所有類型註解
-          sed -i 's/: EnhancedKLineData//g' dusk_monitor.py
-          sed -i 's/: EnhancedKlineData//g' dusk_monitor.py
-          sed -i 's/: str//g' dusk_monitor.py
-          sed -i 's/: int//g' dusk_monitor.py
-          sed -i 's/: float//g' dusk_monitor.py
-          sed -i 's/: bool//g' dusk_monitor.py
-          sed -i 's/: tuple//g' dusk_monitor.py
-          sed -i 's/: list//g' dusk_monitor.py
-          sed -i 's/: dict//g' dusk_monitor.py
-          sed -i 's/-> None://g' dusk_monitor.py
-          sed -i 's/-> tuple://g' dusk_monitor.py
+        if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+          curl -s "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d "chat_id=$TG_CHAT_ID" -d "text=監控啟動成功 $(date)"
         fi
-    - name: 運行監控
-      run: python dusk_monitor.py
+    - run: python dusk_monitor.py
