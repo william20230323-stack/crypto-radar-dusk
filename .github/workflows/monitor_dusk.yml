@@ -1,8 +1,6 @@
 name: DUSK/USDT Multi-Exchange Monitor
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 env:
@@ -16,19 +14,10 @@ jobs:
     - uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    - run: pip install -r requirements.txt
     - run: |
-        # 修復類型註解
-        sed -i 's/: EnhancedKLineData//g' dusk_monitor.py
-        sed -i 's/: EnhancedKlineData//g' dusk_monitor.py
-        sed -i 's/-> None://g' dusk_monitor.py
-        sed -i 's/-> tuple://g' dusk_monitor.py
+        # 直接替換第3行函數定義
+        sed -i '3s/def check_single_kline_alert(kline: EnhancedKLineData, exchange_id: str, name: str) -> None:/def check_single_kline_alert(kline, exchange_id, name):/' dusk_monitor.py
+        # 檢查第4行函數
+        sed -i '4s/.*/def check_kline_volume_alert(kline, exchange_id, name, minute_key):/' dusk_monitor.py
+    - run: head -5 dusk_monitor.py
     - run: python dusk_monitor.py
-    - name: Notify Status
-      if: always()
-      env:
-        TG_TOKEN: ${{ secrets.TG_TOKEN }}
-        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      run: |
-        [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT_ID" ] && curl -s "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-          -d "chat_id=$TG_CHAT_ID" -d "text=監控完成: ${{ job.status }}"
