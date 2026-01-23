@@ -15,9 +15,7 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
     - run: |
-        # 直接替換第3行函數定義
-        sed -i '3s/def check_single_kline_alert(kline: EnhancedKLineData, exchange_id: str, name: str) -> None:/def check_single_kline_alert(kline, exchange_id, name):/' dusk_monitor.py
-        # 檢查第4行函數
+        sed -i '3s/.*/def check_single_kline_alert(kline, exchange_id, name):/' dusk_monitor.py
         sed -i '4s/.*/def check_kline_volume_alert(kline, exchange_id, name, minute_key):/' dusk_monitor.py
-    - run: head -5 dusk_monitor.py
+        sed -i 's/):/:/g' dusk_monitor.py
     - run: python dusk_monitor.py
