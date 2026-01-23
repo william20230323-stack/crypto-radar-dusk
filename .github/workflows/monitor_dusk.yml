@@ -17,6 +17,12 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
     - run: pip install -r requirements.txt
+    - run: |
+        # 修復類型註解
+        sed -i 's/: EnhancedKLineData//g' dusk_monitor.py
+        sed -i 's/: EnhancedKlineData//g' dusk_monitor.py
+        sed -i 's/-> None://g' dusk_monitor.py
+        sed -i 's/-> tuple://g' dusk_monitor.py
     - run: python dusk_monitor.py
     - name: Notify Status
       if: always()
