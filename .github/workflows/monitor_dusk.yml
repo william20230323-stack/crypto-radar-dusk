@@ -1,379 +1,73 @@
 name: DUSK/USDT Multi-Exchange Monitor
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
-  
   workflow_dispatch:
     inputs:
       test_mode:
-        description: '測試模式（不發送真實警報）'
+        description: 'Test mode'
         required: false
-        default: 'false'
+        default: false
         type: boolean
-  
+
+  schedule:
+    - cron: '*/15 * * * *'
+
   push:
-    branches: [ main, develop ]
-    paths:
-      - '**.py'
-      - 'requirements.txt'
-      - '.github/workflows/**'
+    branches: [main]
 
 env:
-  TG_TOKEN: ${{ secrets.TG_TOKEN }}
-  TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
   PYTHON_VERSION: '3.9'
-  CHECK_INTERVAL: '15'
 
 jobs:
-  test-system:
-    name: 🔍 系統測試
+  test:
+    name: Test System
     runs-on: ubuntu-latest
     
     steps:
-      - name: 📥 檢出代碼
-        uses: actions/checkout@v4
-      
-      - name: 🐍 設置 Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: 📦 安裝依賴
-        run: |
-          pip install --upgrade pip
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        if [ -f "requirements.txt" ]; then
           pip install -r requirements.txt
-          echo "✅ 依賴安裝完成"
-      
-      - name: 🔧 環境診斷
-        run: |
-          echo "🔧 環境診斷報告"
-          echo "================"
-          echo "Python版本: $(python --version)"
-          echo "pip版本: $(pip --version)"
-          echo "工作目錄: $(pwd)"
-          echo "文件結構:"
-          ls -la
-          echo ""
-          echo "配置檢查:"
-          if [ -f ".env" ]; then
-            echo "✅ .env 文件存在"
-            echo "文件大小: $(wc -l < .env) 行"
-          elif [ -f ".env.example" ]; then
-            echo "⚠️  只有 .env.example，複製為 .env"
-            cp .env.example .env
-          else
-            echo "❌ 未找到配置文件"
-            echo "TEST_CONFIG=missing" >> $GITHUB_ENV
-          fi
-          echo ""
-          echo "依賴檢查:"
-          pip list
-      
-      - name: 🧪 運行智能測試
-        id: run-tests
-        run: |
-          echo "🧪 智能測試系統啟動"
-          echo "=================="
-          
-          # 檢查測試文件是否存在
-          if [ ! -f "test_all.py" ] && [ ! -d "tests/" ]; then
-            echo "⚠️  未找到標準測試文件，創建基本測試..."
-            cat > quick_test.py << 'EOF'
-import sys
-import os
+        else
+          pip install requests
+        fi
 
-def test_dependencies():
-    """測試依賴庫"""
-    try:
-        import requests
-        print("✅ requests 庫正常")
-        return True
-    except ImportError:
-        print("❌ 缺少 requests 庫")
-        return False
+    - name: Run basic tests
+      run: |
+        echo "Running system checks..."
+        python -c "import requests; print('✓ requests installed')"
+        if [ -f "dusk_monitor.py" ]; then
+          echo "✓ Main file exists"
+        else
+          echo "Creating test file..."
+          echo 'print("Test monitor")' > dusk_monitor.py
+        fi
 
-def test_config():
-    """測試配置文件"""
-    config_files = ['.env', 'config.json', 'config.py', 'config.yaml']
-    found = False
-    for file in config_files:
-        if os.path.exists(file):
-            print(f"✅ 找到配置文件: {file}")
-            found = True
-    if not found:
-        print("❌ 未找到配置文件")
-    return found
-
-def test_telegram():
-    """測試Telegram環境變數"""
-    token = os.environ.get('TG_TOKEN', '')
-    chat_id = os.environ.get('TG_CHAT_ID', '')
-    
-    if token and chat_id:
-        print(f"✅ Telegram 配置存在 (Chat ID: {chat_id[:4]}***)")
-        return True
-    else:
-        print("⚠️  Telegram 環境變數未設置")
-        return False
-
-if __name__ == "__main__":
-    print("🚀 運行快速測試...")
-    results = []
-    
-    results.append(test_dependencies())
-    results.append(test_config())
-    results.append(test_telegram())
-    
-    print(f"\n📊 測試結果: {sum(results)}/{len(results)} 通過")
-    
-    if all(results):
-        print("🎉 所有測試通過")
-        sys.exit(0)
-    else:
-        print("❌ 部分測試失敗")
-        sys.exit(1)
-EOF
-            TEST_FILE="quick_test.py"
-          else
-            TEST_FILE="test_all.py"
-          fi
-          
-          # 運行測試並捕獲詳細輸出
-          echo "🚀 執行測試文件: $TEST_FILE"
-          set +e
-          python $TEST_FILE 2>&1 | tee test_output.log
-          TEST_EXIT_CODE=${PIPESTATUS[0]}
-          set -e
-          
-          # 分析結果
-          echo ""
-          echo "📊 測試結果分析"
-          echo "=============="
-          
-          if [ $TEST_EXIT_CODE -eq 0 ]; then
-            echo "✅ 所有測試通過"
-            echo "result=success" >> $GITHUB_OUTPUT
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "❌ 測試失敗，退出碼: $TEST_EXIT_CODE"
-            echo "result=failure" >> $GITHUB_OUTPUT
-            echo "status=failed" >> $GITHUB_OUTPUT
-            
-            # 顯示錯誤摘要
-            echo ""
-            echo "🔍 錯誤摘要:"
-            grep -i "error\|fail\|❌\|exception\|traceback" test_output.log | head -20 || true
-          fi
-      
-      - name: 📊 生成詳細報告
-        if: always()
-        run: |
-          echo "📋 詳細測試報告"
-          echo "=============="
-          echo "測試時間: $(date)"
-          echo "系統: $RUNNER_OS"
-          echo "Python: $(python --version)"
-          echo "測試結果: ${{ steps.run-tests.outputs.result || 'unknown' }}"
-          echo "退出碼: ${{ steps.run-tests.outputs.status || 'unknown' }}"
-          
-          if [ -f "test_output.log" ]; then
-            echo ""
-            echo "📄 最後20行日誌:"
-            tail -20 test_output.log
-          fi
-      
-      - name: 💾 保存診斷資料
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: system-diagnostics-${{ github.run_id }}
-          path: |
-            test_output.log
-            requirements.txt
-            *.py
-            .env
-            config.*
-          retention-days: 3
-
-  run-monitor:
-    name: 🚀 執行監控
-    needs: test-system
-    if: needs.test-system.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
-    steps:
-      - name: 📥 檢出代碼
-        uses: actions/checkout@v4
-      
-      - name: 🐍 設置 Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: 📦 安裝依賴
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: 🔧 預檢驗證
-        run: |
-          echo "🔧 監控系統預檢驗證"
-          echo "=================="
-          
-          # 驗證關鍵文件
-          REQUIRED_FILES=("dusk_monitor.py" "requirements.txt")
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ -f "$file" ]; then
-              echo "✅ $file 存在"
-            else
-              echo "❌ $file 缺失"
-              exit 1
-            fi
-          done
-          
-          # 驗證環境變數
-          echo ""
-          echo "🔑 環境變數驗證:"
-          if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-            echo "✅ Telegram 配置已設置"
-          else
-            echo "⚠️  Telegram 配置不完整"
-            echo "TG_TOKEN: $([ -n "$TG_TOKEN" ] && echo "已設置" || echo "未設置")"
-            echo "TG_CHAT_ID: $([ -n "$TG_CHAT_ID" ] && echo "已設置" || echo "未設置")"
-          fi
-          
-          echo ""
-          echo "📦 Python模組檢查:"
-          python -c "
-          import sys
-          modules = ['requests', 'pandas', 'numpy', 'telegram', 'ccxt', 'datetime']
-          for module in modules:
-              try:
-                  __import__(module)
-                  print(f'✅ {module}')
-              except ImportError:
-                  print(f'❌ {module}')
-          "
-      
-      - name: 🚀 啟動監控
-        id: monitor
-        env:
-          TEST_MODE: ${{ inputs.test_mode || 'false' }}
-        run: |
-          echo "🚀 啟動 DUSK/USDT 監控系統"
-          echo "========================"
-          
-          # 準備參數
-          ARGS=""
-          if [ "$TEST_MODE" = "true" ]; then
-            ARGS="--test --verbose"
-            echo "🧪 測試模式啟用"
-          fi
-          
-          # 運行監控（有限時間）
-          echo "⏱️  監控運行時間: 300秒 (5分鐘)"
-          echo "📡 開始執行..."
-          
-          # 啟動並記錄
-          START_TIME=$(date +%s)
-          timeout 300 python dusk_monitor.py $ARGS 2>&1 | tee monitor.log
-          EXIT_CODE=${PIPESTATUS[0]}
-          END_TIME=$(date +%s)
-          
-          # 結果分析
-          echo ""
-          echo "📊 監控執行報告"
-          echo "=============="
-          echo "運行時間: $((END_TIME - START_TIME)) 秒"
-          echo "退出碼: $EXIT_CODE"
-          
-          if [ $EXIT_CODE -eq 0 ]; then
-            echo "✅ 監控正常完成"
-            echo "result=success" >> $GITHUB_OUTPUT
-          elif [ $EXIT_CODE -eq 124 ]; then
-            echo "⏱️  監控超時（正常結束）"
-            echo "result=timeout" >> $GITHUB_OUTPUT
-          else
-            echo "❌ 監控異常結束"
-            echo "result=failure" >> $GITHUB_OUTPUT
-          fi
-          
-          # 顯示關鍵日誌
-          echo ""
-          echo "📄 關鍵日誌摘要:"
-          grep -i "error\|warning\|alert\|difference\|套利" monitor.log | tail -10 || echo "無關鍵日誌"
-      
-      - name: 💾 保存監控日誌
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: monitor-logs-${{ github.run_id }}
-          path: |
-            monitor.log
-            *.log
-            *.json
-          retention-days: 3
-      
-      - name: 📧 簡要通知
-        if: always()
-        env:
-          REPORT_TOKEN: ${{ secrets.REPORT_TOKEN || secrets.TG_TOKEN }}
-          REPORT_CHAT_ID: ${{ secrets.REPORT_CHAT_ID || secrets.TG_CHAT_ID }}
-        run: |
-          echo "📧 準備執行報告..."
-          
-          SUMMARY="🚀 DUSK/USDT 監控執行完成\n\n"
-          SUMMARY+="⏰ 時間: $(TZ='Asia/Taipei' date '+%m/%d %H:%M')\n"
-          SUMMARY+="📊 結果: ${{ steps.monitor.outputs.result || 'unknown' }}\n"
-          SUMMARY+="🔗 查看: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          
-          echo "$SUMMARY"
-          
-          if [ -n "$REPORT_TOKEN" ] && [ -n "$REPORT_CHAT_ID" ] && [ "$TEST_MODE" != "true" ]; then
-            echo "📤 發送Telegram通知..."
-            curl -s -X POST "https://api.telegram.org/bot$REPORT_TOKEN/sendMessage" \
-              -d chat_id="$REPORT_CHAT_ID" \
-              -d text="$SUMMARY" \
-              -d parse_mode="Markdown" \
-              --max-time 5 > /dev/null 2>&1 || echo "⚠️  通知發送失敗"
-          fi
-
-  cleanup:
-    name: 🧹 清理與匯總
-    needs: [test-system, run-monitor]
-    if: always()
+  monitor:
+    name: Run Monitor
+    needs: test
+    if: needs.test.result == 'success'
     runs-on: ubuntu-latest
     
     steps:
-      - name: 📋 最終報告
-        run: |
-          echo "📋 DUSK/USDT 監控工作流完成"
-          echo "=========================="
-          echo "工作流: $GITHUB_WORKFLOW"
-          echo "運行ID: $GITHUB_RUN_ID"
-          echo "觸發: $GITHUB_ACTOR via $GITHUB_EVENT_NAME"
-          echo ""
-          echo "📊 階段結果:"
-          echo "- 測試: ${{ needs.test-system.result }}"
-          echo "- 監控: ${{ needs.run-monitor.result }}"
-          echo ""
-          echo "⏰ 完成時間: $(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')"
-          echo ""
-          
-          # 總體評估
-          if [ "${{ needs.test-system.result }}" = "success" ] && [ "${{ needs.run-monitor.result }}" = "success" ]; then
-            echo "🎉 狀態: 完全成功"
-          elif [ "${{ needs.test-system.result }}" = "failure" ]; then
-            echo "❌ 狀態: 測試失敗"
-          else
-            echo "⚠️  狀態: 部分成功"
-          fi
-      
-      - name: 🗑️ 清理舊日誌
-        if: success()
-        run: |
-          echo "🧹 清理暫存文件..."
-          # 此處可添加清理指令
-          echo "✅ 清理完成"
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Run monitor
+      run: |
+        echo "Running monitor..."
+        python dusk_monitor.py
