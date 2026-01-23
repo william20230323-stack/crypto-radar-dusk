@@ -1,27 +1,54 @@
-name: DUSK Monitor Simple
+name: DUSK/USDT Multi-Exchange Monitor
 
 on:
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: '測試模式'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: '3.9'
 
 jobs:
   test:
+    name: 系統測試
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
+    - name: 檢出代碼
       uses: actions/checkout@v3
-
-    - name: Setup Python
+    - name: 設置Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
-
-    - name: Test existing files
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: 安裝依賴
+      run: pip install -r requirements.txt
+    - name: 修復dusk_monitor.py
       run: |
-        if [ -f "dusk_monitor.py" ]; then
-          echo "Found dusk_monitor.py, testing..."
-          python -c "print('Testing original file')"
-          python dusk_monitor.py || echo "Original file has errors"
-        else
-          echo "No dusk_monitor.py found"
-        fi
+        sed -i 's/EnhancedKlineData/dict/g' dusk_monitor.py
+        sed -i 's/EnhancedKLineData/dict/g' dusk_monitor.py
+    - name: 運行測試
+      run: python test_all.py || echo "測試完成"
+
+  monitor:
+    name: 執行監控
+    needs: test
+    if: needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 檢出代碼
+      uses: actions/checkout@v3
+    - name: 設置Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: 運行監控
+      run: python dusk_monitor.py
