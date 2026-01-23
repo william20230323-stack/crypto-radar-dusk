@@ -15,18 +15,22 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-    - name: 修復文件錯誤
+    - name: 完全修復所有類型註解
       run: |
-        # 完全替換dusk_monitor.py的第3行錯誤函數
         if [ -f "dusk_monitor.py" ]; then
-          echo "修復 dusk_monitor.py..."
-          sed -i '3s/.*/def check_single_kline_alert(kline, exchange_id, name):/' dusk_monitor.py
-          # 檢查是否還有其他同類錯誤
+          echo "完整修復 dusk_monitor.py..."
+          # 移除所有類型註解
           sed -i 's/: EnhancedKLineData//g' dusk_monitor.py
           sed -i 's/: EnhancedKlineData//g' dusk_monitor.py
+          sed -i 's/: str//g' dusk_monitor.py
+          sed -i 's/: int//g' dusk_monitor.py
+          sed -i 's/: float//g' dusk_monitor.py
+          sed -i 's/: bool//g' dusk_monitor.py
+          sed -i 's/: tuple//g' dusk_monitor.py
+          sed -i 's/: list//g' dusk_monitor.py
+          sed -i 's/: dict//g' dusk_monitor.py
+          sed -i 's/-> None://g' dusk_monitor.py
+          sed -i 's/-> tuple://g' dusk_monitor.py
         fi
     - name: 運行監控
-      run: |
-        echo "檢查文件狀態..."
-        head -10 dusk_monitor.py
-        python dusk_monitor.py
+      run: python dusk_monitor.py
